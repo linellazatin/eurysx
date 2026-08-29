@@ -13,3 +13,6 @@ reports/
 build/
 dist/
 *.egg-info/
+
+# Local test outputs
+eur-test*
