@@ -1,26 +1,25 @@
 {
-  // Remote sources are disabled by default. Copy this as
+  // All sources are disabled by default. Copy this as
   // config/pricing.jsonc in this Eurysx checkout; see README.md.
   // Enable only sources you trust.
+  "schemaVersion": 2,
   "sources": {
-    "aws-bedrock": {
+    "amazon-bedrock": {
       "enabled": false,
-      "priority": 1,
-      "profile": "your-aws-pf",
+      "profile": "default",
       "region": "us-east-1",
       "refreshDays": 7
     },
     "pi-models-store": {
       "enabled": false,
-      "priority": 2,
       "refreshDays": 15
     },
     "models-dev": {
       "enabled": false,
-      "priority": 3,
       "url": "https://models.dev/api.json",
       "refreshDays": 7
     }
   },
+  "aliases": {},
   "overrides": {}
 }

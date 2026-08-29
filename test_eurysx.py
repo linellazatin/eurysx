@@ -172,6 +172,27 @@ class CollectorFixtureTests(unittest.TestCase):
 
 
 class PricingTests(unittest.TestCase):
+    def test_route_sources_use_primary_then_other_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "pricing.jsonc", root / "cache")
+            resolver._add("amazon-bedrock", "model", {"input": 1, "output": 2}, "amazon-bedrock")
+            resolver._add("amazon-bedrock", "model", {"input": 3, "output": 4}, "models-dev")
+
+            result = resolver.resolve(
+                "amazon-bedrock", "model", ["models-dev", "amazon-bedrock"]
+            )
+
+        self.assertEqual(result["source"], "models-dev")
+        self.assertEqual(result["pricing"]["output"], 4)
+
+    def test_cache_directory_is_created_without_an_enabled_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            app.PricingResolver(root / "pricing.jsonc", cache)
+            self.assertTrue(cache.exists())
+
     def test_cli_rejects_removed_pricing_file_override(self):
         with patch("sys.argv", ["eurysx", "--pricing-file", "x"]):
             with self.assertRaises(SystemExit):
@@ -193,6 +214,24 @@ class PricingTests(unittest.TestCase):
             result = resolver.resolve("litellm-proxy", "sonnet")
             self.assertEqual(result["status"], "configured")
             self.assertEqual(result["pricing"]["output"], 10)
+
+    def test_provider_alias_resolves_an_exact_configured_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({
+                "aliases": {"amazon-bedrock": {
+                    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+                }},
+                "overrides": {"amazon-bedrock/global.anthropic.claude-sonnet-4-6": {
+                    "input": 3, "output": 15,
+                }},
+            }))
+            resolver = app.PricingResolver(config, root / "cache")
+            result = resolver.resolve("amazon-bedrock", "claude-sonnet-4-6", [])
+
+        self.assertEqual(result["source"], "override")
+        self.assertEqual(result["pricing"]["output"], 15)
 
     def test_unknown_provider_model_has_unknown_cost_status(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -250,7 +289,7 @@ class PricingTests(unittest.TestCase):
             root = Path(temp)
             config = root / "pricing.jsonc"
             config.write_text(json.dumps({"sources": {
-                "aws-bedrock": {"enabled": True, "profile": "p", "region": "r"}
+                "amazon-bedrock": {"enabled": True, "profile": "p", "region": "r"}
             }}))
             app.PricingResolver(config, root / "cache")
         command = run.call_args.args[0]
@@ -264,7 +303,7 @@ class PricingTests(unittest.TestCase):
             cache = root / "cache"
             cache.mkdir()
             cached = {
-                "schema_version": 1, "source": "models-dev",
+                "schema_version": 2, "source": "models-dev",
                 "fetched_at": "2000-01-01T00:00:00",
                 "models": {"provider/model": {"input": 1, "output": 2}},
             }
@@ -437,43 +476,70 @@ class PreferencesTests(unittest.TestCase):
             cost_breakdown={}, provider=provider,
         )
 
-    def test_preferences_choose_the_most_specific_route_rule(self):
+    def test_provider_preferences_override_agent_default(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "preferences.jsonc"
-            path.write_text(json.dumps({"agents": {
-                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
+            path.write_text(json.dumps({"schemaVersion": 2, "agents": {
+                "claude-code": {"billingMode": "unknown"},
                 "codex": {
-                    "default": {"billingMode": "unknown"},
-                    "routes": [
-                        {"match": {"provider": "openai"}, "set": {"billingMode": "subscription"}},
-                        {"match": {"provider": "openai", "model": "gpt-5.6"}, "set": {
-                            "provider": "amazon-bedrock", "billingMode": "metered",
-                            "pricingProvider": "amazon-bedrock", "pricingModel": "bedrock.gpt-5.6",
+                    "billingMode": "unknown",
+                    "providers": {
+                        "openai": {"billingMode": "subscription"},
+                        "amazon-bedrock": {"billingMode": "metered", "pricing": {
+                            "source": "amazon-bedrock", "otherSources": ["models-dev"],
                         }},
-                    ],
+                    },
                 },
-                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
-                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+                "opencode": {"billingMode": "unknown"},
+                "pi": {"billingMode": "unknown"},
             }}))
             preferences = app.PreferencesResolver(path)
-            usage = self._usage()
+            usage = self._usage(provider="amazon-bedrock")
             preferences.apply(usage)
 
-        self.assertEqual(usage.observed_provider, "openai")
+        self.assertEqual(usage.observed_provider, "amazon-bedrock")
         self.assertEqual(usage.provider, "amazon-bedrock")
         self.assertEqual(usage.billing_mode, "metered")
         self.assertEqual(usage.pricing_provider, "amazon-bedrock")
-        self.assertEqual(usage.pricing_model, "bedrock.gpt-5.6")
+        self.assertEqual(usage.pricing_model, "gpt-5.6")
+        self.assertEqual(usage.pricing_sources, ["amazon-bedrock", "models-dev"])
+
+    def test_agent_default_applies_to_all_claude_models_without_model_rules(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"schemaVersion": 2, "agents": {
+                "claude-code": {
+                    "provider": "amazon-bedrock",
+                    "billingMode": "metered",
+                    "pricing": {
+                        "source": "amazon-bedrock",
+                        "otherSources": ["models-dev", "pi-models-store"],
+                    },
+                },
+                "codex": {"billingMode": "unknown"},
+                "opencode": {"billingMode": "unknown"},
+                "pi": {"billingMode": "unknown"},
+            }}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage(provider=None, model="claude-sonnet-4-6")
+            usage.agent = "claude-code"
+            preferences.apply(usage)
+
+        self.assertEqual(usage.provider, "amazon-bedrock")
+        self.assertEqual(usage.billing_mode, "metered")
+        self.assertEqual(usage.pricing_provider, "amazon-bedrock")
+        self.assertEqual(usage.pricing_sources,
+                         ["amazon-bedrock", "models-dev", "pi-models-store"])
 
     def test_subscription_usage_is_not_priced_even_when_price_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             preferences_path = root / "preferences.jsonc"
-            preferences_path.write_text(json.dumps({"agents": {
-                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
-                "codex": {"default": {"billingMode": "subscription"}, "routes": []},
-                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
-                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+            preferences_path.write_text(json.dumps({"schemaVersion": 2, "agents": {
+                "claude-code": {"billingMode": "unknown"},
+                "codex": {"billingMode": "subscription"},
+                "opencode": {"billingMode": "unknown"},
+                "pi": {"billingMode": "unknown"},
             }}))
             pricing_path = root / "pricing.jsonc"
             pricing_path.write_text(json.dumps({"overrides": {
@@ -489,23 +555,20 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.cost_status, "not_applicable")
         self.assertEqual(usage.cost, 0.0)
 
-    def test_conflicting_route_rules_emit_a_diagnostic_and_use_the_first(self):
+    def test_invalid_provider_policy_emits_a_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "preferences.jsonc"
-            path.write_text(json.dumps({"agents": {
-                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
-                "codex": {"default": {"billingMode": "unknown"}, "routes": [
-                    {"match": {"provider": "openai"}, "set": {"billingMode": "subscription"}},
-                    {"match": {"provider": "openai"}, "set": {"billingMode": "local"}},
-                ]},
-                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
-                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+            path.write_text(json.dumps({"schemaVersion": 2, "agents": {
+                "claude-code": {"billingMode": "unknown"},
+                "codex": {"billingMode": "unknown", "providers": {"openai": "subscription"}},
+                "opencode": {"billingMode": "unknown"},
+                "pi": {"billingMode": "unknown"},
             }}))
             preferences = app.PreferencesResolver(path)
             usage = self._usage()
             preferences.apply(usage)
 
-        self.assertEqual(usage.billing_mode, "subscription")
+        self.assertEqual(usage.billing_mode, "unknown")
         self.assertTrue(preferences.warnings)
 
 
@@ -634,13 +697,14 @@ class DateRangeTests(unittest.TestCase):
 
 
 class PricingPathTests(unittest.TestCase):
-    def test_defaults_are_local_to_the_eurysx_checkout(self):
+    def test_defaults_use_the_current_eurysx_working_directory(self):
         root = Path("/workspace/eurysx")
 
-        self.assertEqual(
-            app.get_eurysx_dirs(environ={}, root=root),
-            (root / "config", root / "cache"),
-        )
+        with patch.object(app.Path, "cwd", return_value=root):
+            self.assertEqual(
+                app.get_eurysx_dirs(environ={}),
+                (root / "config", root / "cache"),
+            )
 
     def test_environment_overrides_win_without_creating_directories(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -669,7 +733,7 @@ class PricingPathTests(unittest.TestCase):
             self.assertEqual(resolver.config_path, config_dir / "pricing.jsonc")
             self.assertEqual(resolver.cache_dir, cache_dir)
             self.assertFalse(config_dir.exists())
-            self.assertFalse(cache_dir.exists())
+            self.assertTrue(cache_dir.exists())
 
 
 class SummaryOutputTests(unittest.TestCase):

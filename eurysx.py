@@ -81,7 +81,7 @@ def get_eurysx_dirs(environ: Optional[Dict[str, str]] = None,
                     root: Optional[Path] = None) -> Tuple[Path, Path]:
     """Return checkout-local configuration and cache directories without creating them."""
     environ = os.environ if environ is None else environ
-    root = root or Path(__file__).resolve().parent
+    root = root or Path.cwd()
 
     config_override = environ.get("EURYSX_CONFIG_DIR")
     cache_override = environ.get("EURYSX_CACHE_DIR")
@@ -95,7 +95,7 @@ def get_eurysx_dirs(environ: Optional[Dict[str, str]] = None,
 class PricingResolver:
     """Resolve configured, cached, and local model pricing without fallback guesses."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, config_path: Optional[Path] = None, cache_dir: Optional[Path] = None,
                  force_refresh: bool = False):
@@ -103,7 +103,8 @@ class PricingResolver:
         self.config_path = config_path or default_config_dir / "pricing.jsonc"
         self.cache_dir = cache_dir or default_cache_dir
         self.force_refresh = force_refresh
-        self.models: Dict[str, Dict[str, Any]] = {}
+        self.models: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.source_priorities: Dict[str, int] = {}
         self.fetched_at: Dict[str, str] = {}
         self.warnings: List[str] = []
         self.config = {}
@@ -112,6 +113,10 @@ class PricingResolver:
                 self.config = load_jsonc(self.config_path)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self.warnings.append(f"pricing configuration ignored: {exc}")
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.warnings.append(f"pricing cache unavailable: {exc}")
         self._load_configured_sources()
 
     @staticmethod
@@ -126,11 +131,12 @@ class PricingResolver:
         normalized_model = _normalise_model(model_id)
         if normalized_model != model_id:
             keys.append(self._key(provider, normalized_model))
+        source_models = self.models.setdefault(source, {})
         for key in keys:
-            existing = self.models.get(key)
+            existing = source_models.get(key)
             if existing is None or priority < existing["priority"]:
-                self.models[key] = {"pricing": pricing, "source": source,
-                                    "fetched_at": fetched_at, "priority": priority}
+                source_models[key] = {"pricing": pricing, "source": source,
+                                      "fetched_at": fetched_at, "priority": priority}
 
     def _cache_path(self, source: str) -> Path:
         return self.cache_dir / f"pricing-{source}.json"
@@ -154,7 +160,7 @@ class PricingResolver:
                     provider, _, model_id = key.partition("/")
                     if not model_id:
                         model_id = provider
-                        provider = "amazon-bedrock" if source == "aws-bedrock" else None
+                        provider = "amazon-bedrock" if source == "amazon-bedrock" else None
                     self._add(provider if model_id else None, model_id or provider,
                               pricing, source, fetched, data.get("priority", 100))
             self.fetched_at[source] = fetched
@@ -174,8 +180,9 @@ class PricingResolver:
         for source, settings in sources.items():
             if isinstance(settings, dict) and settings.get("enabled"):
                 priority = self._source_int(source, settings, "priority", 100)
-                configured.append((priority, source, settings))
+            configured.append((priority, source, settings))
         for priority, source, settings in sorted(configured, key=lambda item: (item[0], item[1])):
+            self.source_priorities[source] = priority
             cache_path = self._cache_path(source)
             fresh = cache_path.exists() and not self.force_refresh and self._cache_fresh(
                 cache_path, self._source_int(source, settings, "refreshDays", 7))
@@ -192,7 +199,6 @@ class PricingResolver:
                     )
                     normalized_models.setdefault(normalized_key, pricing)
                 now = datetime.now().isoformat()
-                self.cache_dir.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(json.dumps({
                     "schema_version": self.SCHEMA_VERSION,
                     "source": source,
@@ -216,7 +222,7 @@ class PricingResolver:
             return default
 
     def _fetch(self, source: str, settings: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
-        if source == "aws-bedrock":
+        if source == "amazon-bedrock":
             command = ["aws", "pricing", "get-products", "--profile",
                        settings.get("profile", ""), "--region", settings.get("region", ""),
                        "--service-code", "AmazonBedrock"]
@@ -321,23 +327,38 @@ class PricingResolver:
                     models[f"{provider}/{model_id}"] = pricing
         return models
 
-    def resolve(self, provider: Optional[str], model_id: str) -> Dict[str, Any]:
+    def _model_keys(self, provider: Optional[str], model_id: str) -> List[str]:
+        aliases = self.config.get("aliases", {}) if isinstance(self.config, dict) else {}
+        provider_aliases = aliases.get(provider, {}) if isinstance(aliases, dict) else {}
+        alias = provider_aliases.get(model_id) if isinstance(provider_aliases, dict) else None
+        model_ids = [alias, model_id] if isinstance(alias, str) and alias != model_id else [model_id]
+        keys = []
+        for candidate in model_ids:
+            candidates = [candidate]
+            normalized = _normalise_model(candidate)
+            if normalized != candidate:
+                candidates.append(normalized)
+            keys.extend(self._key(provider, item) for item in candidates)
+        return list(dict.fromkeys(keys))
+
+    def resolve(self, provider: Optional[str], model_id: str,
+                sources: Optional[List[str]] = None) -> Dict[str, Any]:
         overrides = self.config.get("overrides", {})
-        model_keys = [model_id]
-        normalized_model = _normalise_model(model_id)
-        if normalized_model != model_id:
-            model_keys.append(normalized_model)
-        keys = [self._key(provider, model) for model in model_keys] if provider else model_keys
+        keys = self._model_keys(provider, model_id)
         for key in keys:
             pricing = _pricing_values(overrides.get(key, {})) if isinstance(overrides, dict) else None
             if pricing:
                 return {"pricing": pricing, "status": "configured", "source": "override",
                         "fetched_at": None}
-        for key in keys:
-            if key in self.models:
-                return {"pricing": self.models[key]["pricing"], "status": "cached",
-                        "source": self.models[key]["source"],
-                        "fetched_at": self.models[key]["fetched_at"]}
+        source_names = sources if sources is not None else sorted(
+            self.models, key=lambda name: (self.source_priorities.get(name, 100), name)
+        )
+        for source in dict.fromkeys(source_names):
+            for key in keys:
+                entry = self.models.get(source, {}).get(key)
+                if entry:
+                    return {"pricing": entry["pricing"], "status": "cached",
+                            "source": source, "fetched_at": entry["fetched_at"]}
         return {"pricing": None, "status": "unknown", "source": None, "fetched_at": None}
 
 
@@ -391,51 +412,48 @@ class PreferencesResolver:
     def apply(self, usage):
         observed_provider = usage.observed_provider or usage.provider
         usage.observed_provider = observed_provider
-        policy = self._policy_for(usage.agent, observed_provider, usage.model_id)
+        policy = self._policy_for(usage.agent, observed_provider)
         usage.provider = policy.get("provider", observed_provider)
         usage.billing_mode = policy["billingMode"]
-        usage.pricing_provider = policy.get("pricingProvider", usage.provider)
-        usage.pricing_model = policy.get("pricingModel", usage.model_id)
+        usage.pricing_provider = usage.provider
+        usage.pricing_model = usage.model_id
+        usage.pricing_sources = policy.get("pricingSources", [])
 
-    def _policy_for(self, agent: str, provider: Optional[str], model_id: str) -> Dict[str, Any]:
+    def _policy_for(self, agent: str, provider: Optional[str]) -> Dict[str, Any]:
         agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
         agent_config = agents.get(agent, {}) if isinstance(agents, dict) else {}
         if not isinstance(agent_config, dict):
             self._warn(f"preferences {agent} must be an object; using unknown defaults")
             return {"billingMode": "unknown"}
-        default = agent_config.get("default", {})
-        policy = dict(default) if isinstance(default, dict) else {}
-        if not isinstance(default, dict):
-            self._warn(f"preferences {agent}.default must be an object")
-        matches = []
-        routes = agent_config.get("routes", [])
-        if not isinstance(routes, list):
-            self._warn(f"preferences {agent}.routes must be a list")
-            routes = []
-        for index, route in enumerate(routes):
-            if not isinstance(route, dict):
-                self._warn(f"preferences {agent}.routes[{index}] must be an object")
-                continue
-            match, settings = route.get("match"), route.get("set")
-            if not isinstance(match, dict) or not isinstance(settings, dict):
-                self._warn(f"preferences {agent}.routes[{index}] needs match and set objects")
-                continue
-            if not match or set(match) - {"provider", "model"}:
-                self._warn(f"preferences {agent}.routes[{index}] has an invalid match")
-                continue
-            if match.get("provider", provider) != provider or match.get("model", model_id) != model_id:
-                continue
-            matches.append((len(match), index, settings))
-        if matches:
-            matches.sort(key=lambda item: (-item[0], item[1]))
-            if len(matches) > 1 and matches[0][0] == matches[1][0]:
-                self._warn(f"preferences {agent} has equally specific matching routes; using first")
-            policy.update(matches[0][2])
+        policy = {key: agent_config[key] for key in ("provider", "billingMode", "pricing")
+                  if key in agent_config}
+        providers = agent_config.get("providers", {})
+        if providers and not isinstance(providers, dict):
+            self._warn(f"preferences {agent}.providers must be an object")
+        provider_config = providers.get(provider) if isinstance(providers, dict) and provider else None
+        if provider_config is not None and not isinstance(provider_config, dict):
+            self._warn(f"preferences {agent}.providers.{provider} must be an object")
+        elif isinstance(provider_config, dict):
+            policy.update(provider_config)
+            policy.setdefault("provider", provider)
         billing_mode = policy.get("billingMode", "unknown")
         if billing_mode not in self.BILLING_MODES:
             self._warn(f"preferences {agent} has invalid billingMode; using unknown")
             billing_mode = "unknown"
         policy["billingMode"] = billing_mode
+        pricing = policy.get("pricing", {})
+        if pricing and not isinstance(pricing, dict):
+            self._warn(f"preferences {agent}.pricing must be an object")
+            pricing = {}
+        source = pricing.get("source") if isinstance(pricing, dict) else None
+        others = pricing.get("otherSources", []) if isinstance(pricing, dict) else []
+        if source is not None and not isinstance(source, str):
+            self._warn(f"preferences {agent}.pricing.source must be a string")
+            source = None
+        if not isinstance(others, list) or not all(isinstance(item, str) for item in others):
+            self._warn(f"preferences {agent}.pricing.otherSources must be a string list")
+            others = []
+        policy["pricingSources"] = ([source] if source else []) + others if pricing else []
         return policy
 
 
@@ -464,7 +482,8 @@ def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
             usage.pricing_fetched_at = None
             continue
         resolved = resolver.resolve(usage.pricing_provider or usage.provider,
-                                    usage.pricing_model or usage.model_id)
+                                    usage.pricing_model or usage.model_id,
+                                    usage.pricing_sources)
         usage.cost = calculate_cost(
             usage.input_tokens, usage.output_tokens,
             usage.cache_read_tokens, usage.cache_write_tokens,
@@ -498,6 +517,7 @@ class UsageEntry:
     billing_mode: str = "unknown"
     pricing_provider: Optional[str] = None
     pricing_model: Optional[str] = None
+    pricing_sources: List[str] = None
     cost_status: str = "unknown"
     pricing_source: Optional[str] = None
     pricing_fetched_at: Optional[str] = None
@@ -1390,7 +1410,7 @@ def print_single_agent_report(agent: str, usages: List[UsageEntry],
             pct = (model_data['cost'] / actual_cost * 100) if actual_cost > 0 else 0
             print(f"  {model_id}: ${model_data['cost']:>12,.2f} ({pct:.1f}%)")
     source_paths = {
-        "aws-bedrock": "Eurysx cache/pricing-aws-bedrock.json",
+        "amazon-bedrock": "Eurysx cache/pricing-amazon-bedrock.json",
         "pi-models-store": "Eurysx cache/pricing-pi-models-store.json",
         "models-dev": "Eurysx cache/pricing-models-dev.json",
         "override": "Eurysx config/pricing.jsonc",
