@@ -16,6 +16,9 @@ FIXTURES = Path(__file__).parent / "tests" / "fixtures"
 
 
 class CollectorFixtureTests(unittest.TestCase):
+    def test_opencode_fixture_is_tracked(self):
+        self.assertTrue((FIXTURES / "opencode" / "database.sql").is_file())
+
     def test_claude_fixture_normalizes_usage_and_transcript_metrics(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -133,6 +136,11 @@ class CollectorFixtureTests(unittest.TestCase):
 
     @staticmethod
     def _write_opencode_fixture(db_path, assistant_first=False):
+        if not assistant_first:
+            conn = sqlite3.connect(db_path)
+            conn.executescript((FIXTURES / "opencode" / "database.sql").read_text())
+            conn.close()
+            return
         conn = sqlite3.connect(db_path)
         conn.executescript("""
             CREATE TABLE session (
