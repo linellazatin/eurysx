@@ -1,0 +1,11 @@
+{
+  "lastComputedDate": "2026-08-01",
+  "modelUsage": {
+    "claude-sonnet-4": {
+      "inputTokens": 10,
+      "outputTokens": 20,
+      "cacheReadInputTokens": 30,
+      "cacheCreationInputTokens": 40
+    }
+  }
+}

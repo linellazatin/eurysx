@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Local pricing state
+cache/
+config/pricing.jsonc
+
+# Generated reports and package artifacts
+reports/
+build/
+dist/
+*.egg-info/
