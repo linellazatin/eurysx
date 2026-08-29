@@ -10,6 +10,7 @@
 - Checkout-local pricing config/cache paths with explicit environment overrides.
 - Configurable pricing resolution: recorded cost, overrides, enabled sources, cache fallback, then unknown.
 - User-owned per-agent route and billing preferences with pricing-provider mapping.
+- Ordered provider-aware pricing source fallbacks and a project-local cache.
 - Sanitized collector fixtures, pricing regression tests, setuptools metadata, and MIT license.
 
 ### Changed
@@ -22,3 +23,7 @@
 - All-time reports derive cost-rate periods from observed usage dates.
 - Reports separate metered token coverage from subscription, credit, quota, local, and unknown usage.
 - Codex preserves recorded route-provider metadata; provider-qualified prices no longer cross-match.
+- Preferences now use agent defaults and provider overrides; `aws-bedrock` is
+  renamed to `amazon-bedrock` in pricing configuration and cache provenance.
+- Configuration documentation and samples now distinguish required enabled-source
+  settings from optional agent and provider policies.

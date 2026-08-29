@@ -73,6 +73,11 @@ Establish Eurysx as a trustworthy, installable local CLI.
   preserve observed provider identity and never infer a route from model names.
 - [x] Separate metered USD coverage from subscription, credit, quota, local,
   and unknown billing semantics in terminal and JSON reports.
+- [x] Replace model-match preferences with readable agent defaults and provider
+  overrides; add ordered configured-source fallbacks and checkout-local cache
+  creation.
+- [x] Document the JSONC configuration contract, including required settings for
+  enabled price sources and optional agent- versus provider-level policies.
 - [ ] Review the Act I release checklist, then create the user-owned v0.0.1
   commit and tag.
 
