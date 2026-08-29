@@ -219,4 +219,5 @@ python3 -m py_compile eurysx.py
 ```
 
 Sanitized collector fixtures cover Claude Code, Codex, Pi, and OpenCode. The
-OpenCode test builds a temporary SQLite database rather than committing one.
+OpenCode SQL fixture builds a temporary SQLite database during the test rather
+than committing a binary database file.

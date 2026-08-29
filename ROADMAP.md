@@ -54,7 +54,8 @@ Establish Eurysx as a trustworthy, installable local CLI.
 
 - [x] Add sanitized fixtures and collector-parity tests for Claude Code, Codex,
   OpenCode, and Pi: tokens, requests, turns, tool calls, model, provider,
-  timestamp, and session identity where the harness records it.
+  timestamp, and session identity where the harness records it. OpenCode uses a
+  tracked SQL fixture to build its temporary SQLite database.
 - [x] Make unknown cost visibly unknown in terminal and JSON output; distinguish
   known cost coverage from a genuinely zero-cost model.
 - [x] Define rolling versus calendar date semantics and document the CLI contract.

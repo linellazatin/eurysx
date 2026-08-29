@@ -27,3 +27,5 @@
   renamed to `amazon-bedrock` in pricing configuration and cache provenance.
 - Configuration documentation and samples now distinguish required enabled-source
   settings from optional agent and provider policies.
+- OpenCode collector parity now uses a tracked, sanitized SQL fixture that builds
+  its temporary SQLite database during tests.
