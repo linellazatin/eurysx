@@ -1,0 +1,39 @@
+{
+  // Copy as config/preferences.jsonc in this Eurysx checkout.
+  // Rules match exact recorded provider/model metadata; they never infer a route.
+  "schemaVersion": 1,
+  "agents": {
+    "claude-code": {
+      "default": { "billingMode": "unknown" },
+      "routes": []
+    },
+    "codex": {
+      "default": { "billingMode": "unknown" },
+      "routes": [
+        {
+          "match": { "provider": "openai" },
+          "set": { "billingMode": "subscription" }
+        },
+        {
+          "match": { "provider": "amazon-bedrock" },
+          "set": {
+            "billingMode": "metered",
+            "pricingProvider": "amazon-bedrock"
+          }
+        },
+        {
+          "match": { "provider": "litellm" },
+          "set": { "billingMode": "local" }
+        }
+      ]
+    },
+    "opencode": {
+      "default": { "billingMode": "unknown" },
+      "routes": []
+    },
+    "pi": {
+      "default": { "billingMode": "unknown" },
+      "routes": []
+    }
+  }
+}

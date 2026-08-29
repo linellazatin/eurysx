@@ -34,7 +34,7 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertEqual(len(usages), 1)
         usage = usages[0]
         self.assertEqual(usage.model_id, "claude-sonnet-4")
-        self.assertEqual(usage.provider, "anthropic")
+        self.assertIsNone(usage.provider)
         self.assertEqual(usage.timestamp, "2026-08-01")
         self.assertEqual(
             (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
@@ -54,7 +54,8 @@ class CollectorFixtureTests(unittest.TestCase):
 
         usage = next(item for item in usages if not item.is_metric_only)
         self.assertEqual(usage.model_id, "gpt-5.6")
-        self.assertEqual(usage.provider, "codex")
+        self.assertEqual(usage.provider, "openai")
+        self.assertEqual(usage.observed_provider, "openai")
         self.assertEqual(usage.timestamp, "2026-08-01T12:00:00Z")
         self.assertEqual(
             (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
@@ -211,6 +212,14 @@ class PricingTests(unittest.TestCase):
             resolver._add("provider", "model", {"input": 1, "output": 1}, "earlier", priority=1)
             self.assertEqual(resolver.resolve("provider", "model")["source"], "earlier")
 
+    def test_provider_qualified_pricing_does_not_match_another_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "pricing.jsonc", root / "cache")
+            resolver._add("other-provider", "model", {"input": 1, "output": 1}, "local")
+
+            self.assertEqual(resolver.resolve("target-provider", "model")["status"], "unknown")
+
     def test_pi_store_is_used_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -317,7 +326,7 @@ class CostCoverageTests(unittest.TestCase):
             input_tokens=total_tokens, output_tokens=0, cache_read_tokens=0,
             cache_write_tokens=0, total_tokens=total_tokens, cost=cost,
             cost_breakdown={"total": cost} if cost_status != "unknown" else {},
-            provider="provider", cost_status=cost_status,
+            provider="provider", billing_mode="metered", cost_status=cost_status,
         )
 
     def test_analysis_reports_known_cost_and_token_coverage(self):
@@ -357,7 +366,7 @@ class CostCoverageTests(unittest.TestCase):
             )
 
         self.assertIn("KNOWN COST", output.getvalue())
-        self.assertIn("Priced token coverage:", output.getvalue())
+        self.assertIn("Metered token coverage:", output.getvalue())
 
     def test_zero_token_report_marks_pricing_coverage_not_applicable(self):
         stats = app.UsageAnalyzer.analyze_agent(
@@ -371,7 +380,133 @@ class CostCoverageTests(unittest.TestCase):
             )
 
         self.assertIsNone(stats.priced_token_coverage)
-        self.assertIn("Priced token coverage:                            N/A", output.getvalue())
+        self.assertIn("Metered token coverage:", output.getvalue())
+        self.assertIn("N/A", output.getvalue())
+
+    def test_analysis_separates_metered_coverage_from_non_metered_usage(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        metered.provider = "amazon-bedrock"
+        subscription = self._usage("not_applicable", 0.0, 100)
+        subscription.billing_mode = "subscription"
+        subscription.provider = "openai"
+        unknown = self._usage("unknown", 0.0, 100)
+        unknown.billing_mode = "metered"
+        unknown.provider = "amazon-bedrock"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, subscription, unknown],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(
+                "pi", [metered, subscription, unknown], stats,
+                date(2026, 8, 1), date(2026, 8, 1), "1d"
+            )
+
+        self.assertEqual(stats.metered_tokens, 200)
+        self.assertEqual(stats.non_metered_tokens, {"subscription": 100})
+        self.assertEqual(stats.priced_token_coverage, 0.5)
+        self.assertEqual(stats.route_breakdown["amazon-bedrock/model [metered]"]["tokens"], 200)
+        self.assertIn("Metered token coverage:", output.getvalue())
+
+    def test_unknown_route_tokens_do_not_reduce_metered_coverage(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        unclassified = self._usage("unknown", 0.0, 500)
+        unclassified.billing_mode = "unknown"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, unclassified],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        self.assertEqual(stats.metered_tokens, 100)
+        self.assertEqual(stats.unknown_cost_tokens, 0)
+        self.assertEqual(stats.priced_token_coverage, 1.0)
+
+
+class PreferencesTests(unittest.TestCase):
+    @staticmethod
+    def _usage(provider="openai", model="gpt-5.6"):
+        return app.UsageEntry(
+            agent="codex", model_id=model, timestamp="2026-08-01T12:00:00Z",
+            input_tokens=10, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=10, cost=0.0,
+            cost_breakdown={}, provider=provider,
+        )
+
+    def test_preferences_choose_the_most_specific_route_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {
+                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
+                "codex": {
+                    "default": {"billingMode": "unknown"},
+                    "routes": [
+                        {"match": {"provider": "openai"}, "set": {"billingMode": "subscription"}},
+                        {"match": {"provider": "openai", "model": "gpt-5.6"}, "set": {
+                            "provider": "amazon-bedrock", "billingMode": "metered",
+                            "pricingProvider": "amazon-bedrock", "pricingModel": "bedrock.gpt-5.6",
+                        }},
+                    ],
+                },
+                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
+                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+            }}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage()
+            preferences.apply(usage)
+
+        self.assertEqual(usage.observed_provider, "openai")
+        self.assertEqual(usage.provider, "amazon-bedrock")
+        self.assertEqual(usage.billing_mode, "metered")
+        self.assertEqual(usage.pricing_provider, "amazon-bedrock")
+        self.assertEqual(usage.pricing_model, "bedrock.gpt-5.6")
+
+    def test_subscription_usage_is_not_priced_even_when_price_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            preferences_path = root / "preferences.jsonc"
+            preferences_path.write_text(json.dumps({"agents": {
+                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
+                "codex": {"default": {"billingMode": "subscription"}, "routes": []},
+                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
+                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+            }}))
+            pricing_path = root / "pricing.jsonc"
+            pricing_path.write_text(json.dumps({"overrides": {
+                "openai/gpt-5.6": {"input": 1, "output": 1},
+            }}))
+            usage = self._usage()
+            app.apply_pricing(
+                [usage], app.PricingResolver(pricing_path, root / "cache"),
+                app.PreferencesResolver(preferences_path),
+            )
+
+        self.assertEqual(usage.billing_mode, "subscription")
+        self.assertEqual(usage.cost_status, "not_applicable")
+        self.assertEqual(usage.cost, 0.0)
+
+    def test_conflicting_route_rules_emit_a_diagnostic_and_use_the_first(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {
+                "claude-code": {"default": {"billingMode": "unknown"}, "routes": []},
+                "codex": {"default": {"billingMode": "unknown"}, "routes": [
+                    {"match": {"provider": "openai"}, "set": {"billingMode": "subscription"}},
+                    {"match": {"provider": "openai"}, "set": {"billingMode": "local"}},
+                ]},
+                "opencode": {"default": {"billingMode": "unknown"}, "routes": []},
+                "pi": {"default": {"billingMode": "unknown"}, "routes": []},
+            }}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage()
+            preferences.apply(usage)
+
+        self.assertEqual(usage.billing_mode, "subscription")
+        self.assertTrue(preferences.warnings)
 
 
 class DateRangeTests(unittest.TestCase):
@@ -490,27 +625,22 @@ class DateRangeTests(unittest.TestCase):
         stats = report["agent_stats"]["claude-code"]
         self.assertEqual(stats["usage_entries"], 0)
         self.assertIsNone(stats["priced_token_coverage"])
+        self.assertIn("metered_tokens", stats)
+        self.assertIn("non_metered_tokens", stats)
+        self.assertIn("route_breakdown", stats)
         self.assertTrue(stats["scope_warnings"])
+        self.assertIn("preferences", report)
         self.assertIn("Excluded aggregate usage", terminal.getvalue())
 
 
 class PricingPathTests(unittest.TestCase):
-    def test_platform_defaults_follow_native_user_locations(self):
-        home = Path("/users/line")
-        cases = [
-            ("darwin", {}, home / "Library" / "Application Support" / "Eurysx",
-             home / "Library" / "Caches" / "Eurysx"),
-            ("linux", {"XDG_CONFIG_HOME": "/config", "XDG_CACHE_HOME": "/cache"},
-             Path("/config/Eurysx"), Path("/cache/Eurysx")),
-            ("win32", {"APPDATA": "C:/Roaming", "LOCALAPPDATA": "C:/Local"},
-             Path("C:/Roaming/Eurysx"), Path("C:/Local/Eurysx")),
-        ]
-        for platform, environ, expected_config, expected_cache in cases:
-            with self.subTest(platform=platform):
-                self.assertEqual(
-                    app.get_eurysx_dirs(platform=platform, environ=environ, home=home),
-                    (expected_config, expected_cache),
-                )
+    def test_defaults_are_local_to_the_eurysx_checkout(self):
+        root = Path("/workspace/eurysx")
+
+        self.assertEqual(
+            app.get_eurysx_dirs(environ={}, root=root),
+            (root / "config", root / "cache"),
+        )
 
     def test_environment_overrides_win_without_creating_directories(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -518,12 +648,11 @@ class PricingPathTests(unittest.TestCase):
             config_dir = root / "config-override"
             cache_dir = root / "cache-override"
             config, cache = app.get_eurysx_dirs(
-                platform="linux",
                 environ={
                     "EURYSX_CONFIG_DIR": str(config_dir),
                     "EURYSX_CACHE_DIR": str(cache_dir),
                 },
-                home=root,
+                root=root,
             )
 
             self.assertEqual((config, cache), (config_dir, cache_dir))

@@ -58,8 +58,8 @@ Establish Eurysx as a trustworthy, installable local CLI.
 - [x] Make unknown cost visibly unknown in terminal and JSON output; distinguish
   known cost coverage from a genuinely zero-cost model.
 - [x] Define rolling versus calendar date semantics and document the CLI contract.
-- [x] Define a user-writable configuration and cache location policy for installed
-  Eurysx, then package the required safe defaults.
+- [x] Define checkout-local configuration and cache paths for Act I, with explicit
+  environment overrides for a later portable relocation.
 - [x] Add an explicit license file matching package metadata.
 - [x] Ignore generated package artifacts and conventional local reports.
 - [x] Include the pricing sample and changelog in the source distribution, then
@@ -69,6 +69,10 @@ Establish Eurysx as a trustworthy, installable local CLI.
   startup exceptions.
 - [x] Make OpenCode turn detection independent of SQLite message-row order.
 - [x] Add a release check that the CLI and package metadata versions match.
+- [x] Add user-owned route and billing preferences for each supported agent;
+  preserve observed provider identity and never infer a route from model names.
+- [x] Separate metered USD coverage from subscription, credit, quota, local,
+  and unknown billing semantics in terminal and JSON reports.
 - [ ] Review the Act I release checklist, then create the user-owned v0.0.1
   commit and tag.
 
@@ -138,4 +142,5 @@ Validate demand before expanding the business surface.
 - Cloud sync, accounts, hosted dashboards, team organizations, SSO, RBAC, mobile
   or desktop apps, real-time watchers, background daemons, and editor extensions.
 - LLM-based recommendations, API routing/proxying, prompt-quality scoring,
-  conversation analysis, agent benchmarking, and subscription-value estimates.
+  conversation analysis, agent benchmarking, subscription allocation, and
+  credit-to-USD conversion.

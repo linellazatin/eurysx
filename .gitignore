@@ -6,6 +6,7 @@ __pycache__/
 # Local pricing state
 cache/
 config/pricing.jsonc
+config/preferences.jsonc
 
 # Generated reports and package artifacts
 reports/

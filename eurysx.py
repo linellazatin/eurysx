@@ -77,28 +77,18 @@ def _pricing_values(value: Dict[str, Any]) -> Optional[Dict[str, float]]:
         return None
 
 
-def get_eurysx_dirs(platform: Optional[str] = None, environ: Optional[Dict[str, str]] = None,
-                    home: Optional[Path] = None) -> Tuple[Path, Path]:
-    """Return user-writable configuration and cache directories without creating them."""
-    platform = platform or sys.platform
+def get_eurysx_dirs(environ: Optional[Dict[str, str]] = None,
+                    root: Optional[Path] = None) -> Tuple[Path, Path]:
+    """Return checkout-local configuration and cache directories without creating them."""
     environ = os.environ if environ is None else environ
-    home = home or Path.home()
+    root = root or Path(__file__).resolve().parent
 
     config_override = environ.get("EURYSX_CONFIG_DIR")
     cache_override = environ.get("EURYSX_CACHE_DIR")
-    if platform == "darwin":
-        config_dir = home / "Library" / "Application Support" / "Eurysx"
-        cache_dir = home / "Library" / "Caches" / "Eurysx"
-    elif platform.startswith("win"):
-        config_dir = Path(environ.get("APPDATA", home / "AppData" / "Roaming")) / "Eurysx"
-        cache_dir = Path(environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "Eurysx"
-    else:
-        config_dir = Path(environ.get("XDG_CONFIG_HOME", home / ".config")) / "Eurysx"
-        cache_dir = Path(environ.get("XDG_CACHE_HOME", home / ".cache")) / "Eurysx"
 
     return (
-        Path(config_override).expanduser() if config_override else config_dir,
-        Path(cache_override).expanduser() if cache_override else cache_dir,
+        Path(config_override).expanduser() if config_override else root / "config",
+        Path(cache_override).expanduser() if cache_override else root / "cache",
     )
 
 
@@ -132,7 +122,11 @@ class PricingResolver:
              source: str, fetched_at: Optional[str] = None, priority: int = 100):
         if not model_id:
             return
-        for key in (self._key(provider, model_id), model_id, _normalise_model(model_id)):
+        keys = [self._key(provider, model_id)]
+        normalized_model = _normalise_model(model_id)
+        if normalized_model != model_id:
+            keys.append(self._key(provider, normalized_model))
+        for key in keys:
             existing = self.models.get(key)
             if existing is None or priority < existing["priority"]:
                 self.models[key] = {"pricing": pricing, "source": source,
@@ -158,6 +152,9 @@ class PricingResolver:
             for key, pricing in data.get("models", {}).items():
                 if isinstance(pricing, dict):
                     provider, _, model_id = key.partition("/")
+                    if not model_id:
+                        model_id = provider
+                        provider = "amazon-bedrock" if source == "aws-bedrock" else None
                     self._add(provider if model_id else None, model_id or provider,
                               pricing, source, fetched, data.get("priority", 100))
             self.fetched_at[source] = fetched
@@ -188,8 +185,12 @@ class PricingResolver:
                 models = self._fetch(source, settings)
                 normalized_models = dict(models)
                 for key, pricing in models.items():
-                    model_id = key.rsplit("/", 1)[-1]
-                    normalized_models.setdefault(_normalise_model(model_id), pricing)
+                    provider, separator, model_id = key.partition("/")
+                    normalized_key = (
+                        f"{provider}/{_normalise_model(model_id)}" if separator
+                        else _normalise_model(provider)
+                    )
+                    normalized_models.setdefault(normalized_key, pricing)
                 now = datetime.now().isoformat()
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(json.dumps({
@@ -322,12 +323,17 @@ class PricingResolver:
 
     def resolve(self, provider: Optional[str], model_id: str) -> Dict[str, Any]:
         overrides = self.config.get("overrides", {})
-        for key in (self._key(provider, model_id), model_id):
+        model_keys = [model_id]
+        normalized_model = _normalise_model(model_id)
+        if normalized_model != model_id:
+            model_keys.append(normalized_model)
+        keys = [self._key(provider, model) for model in model_keys] if provider else model_keys
+        for key in keys:
             pricing = _pricing_values(overrides.get(key, {})) if isinstance(overrides, dict) else None
             if pricing:
                 return {"pricing": pricing, "status": "configured", "source": "override",
                         "fetched_at": None}
-        for key in (self._key(provider, model_id), model_id, _normalise_model(model_id)):
+        for key in keys:
             if key in self.models:
                 return {"pricing": self.models[key]["pricing"], "status": "cached",
                         "source": self.models[key]["source"],
@@ -347,22 +353,125 @@ def calculate_cost(input_tokens: int, output_tokens: int, cache_read_tokens: int
     ))
 
 
-def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver):
+class PreferencesResolver:
+    """Resolve user-owned route and billing policy for supported agents."""
+
+    SUPPORTED_AGENTS = ("claude-code", "codex", "opencode", "pi")
+    BILLING_MODES = {"metered", "subscription", "credit", "quota", "local", "unknown"}
+
+    def __init__(self, config_path: Optional[Path] = None):
+        default_config_dir, _ = get_eurysx_dirs()
+        self.config_path = config_path or default_config_dir / "preferences.jsonc"
+        self.warnings: List[str] = []
+        self.config: Dict[str, Any] = {}
+        self._warned: Set[str] = set()
+        if self.config_path.exists():
+            try:
+                self.config = load_jsonc(self.config_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self._warn(f"preferences ignored: {exc}")
+        self._validate_agents()
+
+    def _warn(self, message: str):
+        if message not in self._warned:
+            self.warnings.append(message)
+            self._warned.add(message)
+
+    def _validate_agents(self):
+        if not self.config_path.exists():
+            return
+        agents = self.config.get("agents") if isinstance(self.config, dict) else None
+        if not isinstance(agents, dict):
+            self._warn("preferences ignored: agents must be an object")
+            return
+        for agent in self.SUPPORTED_AGENTS:
+            if agent not in agents:
+                self._warn(f"preferences missing {agent}; using unknown defaults")
+
+    def apply(self, usage):
+        observed_provider = usage.observed_provider or usage.provider
+        usage.observed_provider = observed_provider
+        policy = self._policy_for(usage.agent, observed_provider, usage.model_id)
+        usage.provider = policy.get("provider", observed_provider)
+        usage.billing_mode = policy["billingMode"]
+        usage.pricing_provider = policy.get("pricingProvider", usage.provider)
+        usage.pricing_model = policy.get("pricingModel", usage.model_id)
+
+    def _policy_for(self, agent: str, provider: Optional[str], model_id: str) -> Dict[str, Any]:
+        agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
+        agent_config = agents.get(agent, {}) if isinstance(agents, dict) else {}
+        if not isinstance(agent_config, dict):
+            self._warn(f"preferences {agent} must be an object; using unknown defaults")
+            return {"billingMode": "unknown"}
+        default = agent_config.get("default", {})
+        policy = dict(default) if isinstance(default, dict) else {}
+        if not isinstance(default, dict):
+            self._warn(f"preferences {agent}.default must be an object")
+        matches = []
+        routes = agent_config.get("routes", [])
+        if not isinstance(routes, list):
+            self._warn(f"preferences {agent}.routes must be a list")
+            routes = []
+        for index, route in enumerate(routes):
+            if not isinstance(route, dict):
+                self._warn(f"preferences {agent}.routes[{index}] must be an object")
+                continue
+            match, settings = route.get("match"), route.get("set")
+            if not isinstance(match, dict) or not isinstance(settings, dict):
+                self._warn(f"preferences {agent}.routes[{index}] needs match and set objects")
+                continue
+            if not match or set(match) - {"provider", "model"}:
+                self._warn(f"preferences {agent}.routes[{index}] has an invalid match")
+                continue
+            if match.get("provider", provider) != provider or match.get("model", model_id) != model_id:
+                continue
+            matches.append((len(match), index, settings))
+        if matches:
+            matches.sort(key=lambda item: (-item[0], item[1]))
+            if len(matches) > 1 and matches[0][0] == matches[1][0]:
+                self._warn(f"preferences {agent} has equally specific matching routes; using first")
+            policy.update(matches[0][2])
+        billing_mode = policy.get("billingMode", "unknown")
+        if billing_mode not in self.BILLING_MODES:
+            self._warn(f"preferences {agent} has invalid billingMode; using unknown")
+            billing_mode = "unknown"
+        policy["billingMode"] = billing_mode
+        return policy
+
+
+def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
+                  preferences: Optional[PreferencesResolver] = None):
     """Fill estimated costs while preserving recorded provider costs."""
     for usage in usages:
+        if preferences:
+            preferences.apply(usage)
         if usage.is_metric_only:
             continue
         if usage.cost_status == "recorded":
+            if usage.billing_mode != "metered":
+                if preferences:
+                    preferences._warn(
+                        f"{usage.agent} recorded cost conflicts with {usage.billing_mode}; using metered"
+                    )
+                usage.billing_mode = "metered"
             usage.pricing_source = usage.pricing_source or "recorded"
             continue
-        resolved = resolver.resolve(usage.provider, usage.model_id)
+        if usage.billing_mode in {"subscription", "credit", "quota", "local"}:
+            usage.cost = 0.0
+            usage.cost_breakdown = {}
+            usage.cost_status = "not_applicable"
+            usage.pricing_source = None
+            usage.pricing_fetched_at = None
+            continue
+        resolved = resolver.resolve(usage.pricing_provider or usage.provider,
+                                    usage.pricing_model or usage.model_id)
         usage.cost = calculate_cost(
             usage.input_tokens, usage.output_tokens,
             usage.cache_read_tokens, usage.cache_write_tokens,
             resolved["pricing"],
         )
         usage.cost_breakdown = {"total": usage.cost} if resolved["pricing"] else {}
-        usage.cost_status = resolved["status"]
+        usage.cost_status = "estimated" if resolved["pricing"] else "unknown"
         usage.pricing_source = resolved["source"]
         usage.pricing_fetched_at = resolved["fetched_at"]
 
@@ -385,6 +494,10 @@ class UsageEntry:
     cost: float
     cost_breakdown: Dict[str, float]
     provider: Optional[str] = None
+    observed_provider: Optional[str] = None
+    billing_mode: str = "unknown"
+    pricing_provider: Optional[str] = None
+    pricing_model: Optional[str] = None
     cost_status: str = "unknown"
     pricing_source: Optional[str] = None
     pricing_fetched_at: Optional[str] = None
@@ -431,6 +544,10 @@ class AgentStats:
     unknown_cost_count: int = 0
     unknown_cost_tokens: int = 0
     priced_token_coverage: Optional[float] = None
+    metered_tokens: int = 0
+    non_metered_tokens: Dict[str, int] = None
+    billing_mode_tokens: Dict[str, int] = None
+    route_breakdown: Dict[str, Dict] = None
     cost_status_counts: Dict[str, int] = None
     pricing_sources: Set[str] = None
     pricing_fetched_at: Dict[str, str] = None
@@ -445,6 +562,12 @@ class AgentStats:
             self.daily_activity = {}
         if self.cost_status_counts is None:
             self.cost_status_counts = {}
+        if self.non_metered_tokens is None:
+            self.non_metered_tokens = {}
+        if self.billing_mode_tokens is None:
+            self.billing_mode_tokens = {}
+        if self.route_breakdown is None:
+            self.route_breakdown = {}
         if self.pricing_sources is None:
             self.pricing_sources = set()
         if self.pricing_fetched_at is None:
@@ -543,7 +666,7 @@ class ClaudeCodeExtractor:
                     total_tokens=total_tok,
                     cost=0.0,
                     cost_breakdown={},
-                    provider='anthropic',
+                    provider=None,
                     is_aggregated=True,
                     model_requests=transcript_metrics.get(model_id, UsageMetrics()).model_requests,
                     model_turns=transcript_metrics.get(model_id, UsageMetrics()).model_turns,
@@ -620,7 +743,8 @@ class OpenCodeExtractor:
                     cache_read_tokens=cache_read or 0, cache_write_tokens=cache_write or 0,
                     total_tokens=total_tokens, cost=cost or 0.0,
                     cost_breakdown={'total': cost or 0.0} if cost is not None else {},
-                    provider=provider, cost_status='recorded' if cost is not None else 'unknown',
+                    provider=provider, observed_provider=provider,
+                    cost_status='recorded' if cost is not None else 'unknown',
                     session_id=session_id
                 ))
 
@@ -644,6 +768,7 @@ class OpenCodeExtractor:
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
                     provider=message.get('providerID') or message.get('provider'),
+                    observed_provider=message.get('providerID') or message.get('provider'),
                     model_requests=1,
                     model_turns=1 if message_roles.get(message.get('parentID')) == 'user' else 0,
                     is_metric_only=True
@@ -666,7 +791,8 @@ class OpenCodeExtractor:
                     agent='opencode', model_id=model_id, timestamp=str(timestamp_ms),
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
-                    provider=provider, model_tool_calls=1, is_metric_only=True
+                    provider=provider, observed_provider=provider,
+                    model_tool_calls=1, is_metric_only=True
                 ))
             conn.close()
             return usages
@@ -734,6 +860,7 @@ class PiAgentExtractor:
                         total_tokens=usage.get('totalTokens', 0), cost=recorded_cost or 0.0,
                         cost_breakdown=usage.get('cost', {}) if recorded_cost is not None else {},
                         provider=provider, cost_status='recorded' if recorded_cost is not None else 'unknown',
+                        observed_provider=provider,
                         session_id=session_id,
                         model_requests=1, model_turns=1 if parent.get('role') == 'user' else 0
                     ))
@@ -792,6 +919,7 @@ class CodexExtractor:
         usages = []
         current_model = 'unknown'
         current_session_id = None
+        current_provider = None
         seen_token_events = set()
         
         try:
@@ -802,12 +930,15 @@ class CodexExtractor:
                         event_type = event.get('type')
 
                         if event_type == 'session_meta':
-                            current_session_id = event.get('payload', {}).get('id')
+                            payload = event.get('payload', {})
+                            current_session_id = payload.get('id')
+                            current_provider = payload.get('model_provider')
 
                         # Track model from turn_context
                         elif event_type == 'turn_context':
                             payload = event.get('payload', {})
                             current_model = payload.get('model', 'unknown')
+                            current_provider = payload.get('model_provider', current_provider)
                         
                         # Extract token usage from token_count events
                         elif event_type == 'event_msg':
@@ -840,7 +971,8 @@ class CodexExtractor:
                                         total_tokens=total_tok,
                                         cost=0.0,
                                         cost_breakdown={},
-                                        provider='codex',
+                                        provider=current_provider,
+                                        observed_provider=current_provider,
                                         is_aggregated=False,
                                         session_id=current_session_id,
                                         model_requests=1
@@ -851,6 +983,7 @@ class CodexExtractor:
                                     timestamp=event.get('timestamp', ''), input_tokens=0,
                                     output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                                     total_tokens=0, cost=0.0, cost_breakdown={},
+                                    provider=current_provider, observed_provider=current_provider,
                                     session_id=current_session_id,
                                     model_turns=1, is_metric_only=True
                                 ))
@@ -862,6 +995,7 @@ class CodexExtractor:
                                     timestamp=event.get('timestamp', ''), input_tokens=0,
                                     output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                                     total_tokens=0, cost=0.0, cost_breakdown={},
+                                    provider=current_provider, observed_provider=current_provider,
                                     session_id=current_session_id,
                                     model_tool_calls=1, is_metric_only=True
                                 ))
@@ -947,9 +1081,19 @@ class UsageAnalyzer:
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
         daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0})
+        route_tokens = defaultdict(lambda: {
+            'tokens': 0, 'cost': 0.0, 'entries': 0,
+            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0,
+        })
         sessions = set()
         
         for usage in filtered_usages:
+            billing_mode = usage.billing_mode
+            route_key = f"{usage.provider or 'unknown'}/{usage.model_id} [{billing_mode}]"
+            route_data = route_tokens[route_key]
+            route_data['model_requests'] += usage.model_requests
+            route_data['model_turns'] += usage.model_turns
+            route_data['model_tool_calls'] += usage.model_tool_calls
             stats.total_model_requests += usage.model_requests
             stats.total_model_turns += usage.model_turns
             stats.total_model_tool_calls += usage.model_tool_calls
@@ -958,12 +1102,24 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['model_tool_calls'] += usage.model_tool_calls
             if usage.is_metric_only:
                 continue
+            stats.billing_mode_tokens[billing_mode] = (
+                stats.billing_mode_tokens.get(billing_mode, 0) + usage.total_tokens
+            )
+            if billing_mode == 'metered':
+                stats.metered_tokens += usage.total_tokens
+            elif billing_mode != 'unknown':
+                stats.non_metered_tokens[billing_mode] = (
+                    stats.non_metered_tokens.get(billing_mode, 0) + usage.total_tokens
+                )
+            route_data['tokens'] += usage.total_tokens
+            route_data['entries'] += 1
             stats.cost_status_counts[usage.cost_status] = (
                 stats.cost_status_counts.get(usage.cost_status, 0) + 1
             )
             if usage.cost_status == "unknown":
                 stats.unknown_cost_count += 1
-                stats.unknown_cost_tokens += usage.total_tokens
+                if billing_mode == "metered":
+                    stats.unknown_cost_tokens += usage.total_tokens
             if usage.pricing_source:
                 stats.pricing_sources.add(usage.pricing_source)
             if usage.pricing_source and usage.pricing_fetched_at:
@@ -979,15 +1135,16 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['output'] += usage.output_tokens
             model_tokens[usage.model_id]['cache_read'] += usage.cache_read_tokens
             model_tokens[usage.model_id]['cache_write'] += usage.cache_write_tokens
-            if usage.cost_status != "unknown":
+            if usage.cost_status not in ("unknown", "not_applicable"):
                 model_tokens[usage.model_id]['cost'] += usage.cost
+                route_data['cost'] += usage.cost
             
             stats.total_input_tokens += usage.input_tokens
             stats.total_output_tokens += usage.output_tokens
             stats.total_cache_read_tokens += usage.cache_read_tokens
             stats.total_cache_write_tokens += usage.cache_write_tokens
             stats.total_tokens += usage.total_tokens
-            if usage.cost_status != "unknown":
+            if usage.cost_status not in ("unknown", "not_applicable"):
                 stats.known_cost += usage.cost
                 stats.total_cost += usage.cost
             
@@ -999,10 +1156,11 @@ class UsageAnalyzer:
         
         stats.sessions_count = len(sessions)
         stats.model_breakdown = dict(model_tokens)
+        stats.route_breakdown = dict(route_tokens)
         stats.daily_activity = dict(daily_tokens)
-        if stats.total_tokens:
+        if stats.metered_tokens:
             stats.priced_token_coverage = (
-                (stats.total_tokens - stats.unknown_cost_tokens) / stats.total_tokens
+                (stats.metered_tokens - stats.unknown_cost_tokens) / stats.metered_tokens
             )
         
         rate_start_date = start_date
@@ -1215,9 +1373,15 @@ def print_single_agent_report(agent: str, usages: List[UsageEntry],
     
     print(f"\nKnown reported or estimated cost:     ${actual_cost:>14,.6f}")
     print(f"Unknown-cost entries:                  {stats.unknown_cost_count:>15,}")
-    print(f"Unknown-cost tokens:                   {stats.unknown_cost_tokens:>15,}")
+    print(f"Unknown metered-cost tokens:          {stats.unknown_cost_tokens:>15,}")
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
-    print(f"Priced token coverage:                 {coverage:>14}")
+    print(f"Metered token coverage:                {coverage:>14}")
+    for billing_mode, tokens in sorted(stats.non_metered_tokens.items()):
+        print(f"{billing_mode.title()} tokens:                  {tokens:>15,}")
+
+    print("\nRoute breakdown:")
+    for route, route_data in sorted(stats.route_breakdown.items()):
+        print(f"  {route}: {route_data['tokens']:,} tokens, ${route_data['cost']:.6f}")
     
     print("\nKnown cost by top models:")
     top_models = sorted_models[:5] if len(sorted_models) > 5 else sorted_models
@@ -1433,7 +1597,10 @@ def main():
     start_date, end_date, period_label = get_date_range(args)
     is_all_time = start_date is None
     resolver = PricingResolver(force_refresh=args.refresh_pricing)
+    preferences = PreferencesResolver()
     for warning in resolver.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    for warning in preferences.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     
     # Handle 'all' vs specific agents
@@ -1467,7 +1634,7 @@ def main():
         else:
             print(f"Unknown agent: {agent}")
             continue
-        apply_pricing(usages, resolver)
+        apply_pricing(usages, resolver, preferences)
         
         if usages:
             print(f"  Found {len(usages)} usage entries")
@@ -1525,6 +1692,10 @@ def main():
                 'sources': resolver.fetched_at,
                 'warnings': resolver.warnings,
             },
+            'preferences': {
+                'config_file': str(preferences.config_path),
+                'warnings': preferences.warnings,
+            },
             'agent_stats': {}
         }
         
@@ -1543,6 +1714,10 @@ def main():
                 'unknown_cost_count': stats.unknown_cost_count,
                 'unknown_cost_tokens': stats.unknown_cost_tokens,
                 'priced_token_coverage': stats.priced_token_coverage,
+                'metered_tokens': stats.metered_tokens,
+                'non_metered_tokens': stats.non_metered_tokens,
+                'billing_mode_tokens': stats.billing_mode_tokens,
+                'route_breakdown': stats.route_breakdown,
                 'cost_status_counts': stats.cost_status_counts,
                 'pricing_sources': sorted(stats.pricing_sources),
                 'pricing_fetched_at': stats.pricing_fetched_at,
@@ -1563,14 +1738,21 @@ def main():
             combined_tokens = sum(s.total_tokens for s in all_stats.values())
             combined_cost = sum(s.total_cost for s in all_stats.values())
             combined_unknown_tokens = sum(s.unknown_cost_tokens for s in all_stats.values())
+            combined_metered_tokens = sum(s.metered_tokens for s in all_stats.values())
+            combined_non_metered_tokens = defaultdict(int)
+            for stats in all_stats.values():
+                for billing_mode, tokens in stats.non_metered_tokens.items():
+                    combined_non_metered_tokens[billing_mode] += tokens
             output_result['combined_summary'] = {
                 'total_tokens': combined_tokens,
                 'total_cost': combined_cost,
                 'known_cost': combined_cost,
                 'unknown_cost_tokens': combined_unknown_tokens,
+                'metered_tokens': combined_metered_tokens,
+                'non_metered_tokens': dict(combined_non_metered_tokens),
                 'priced_token_coverage': (
-                    (combined_tokens - combined_unknown_tokens) / combined_tokens
-                    if combined_tokens else None
+                    (combined_metered_tokens - combined_unknown_tokens) / combined_metered_tokens
+                    if combined_metered_tokens else None
                 ),
             }
         

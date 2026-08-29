@@ -1,6 +1,6 @@
 {
-  // Remote sources are disabled by default. Copy this as pricing.jsonc into
-  // Eurysx's platform configuration directory; see README.md for paths.
+  // Remote sources are disabled by default. Copy this as
+  // config/pricing.jsonc in this Eurysx checkout; see README.md.
   // Enable only sources you trust.
   "sources": {
     "aws-bedrock": {

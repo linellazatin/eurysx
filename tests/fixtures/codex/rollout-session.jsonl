@@ -1,4 +1,4 @@
-{"type":"session_meta","payload":{"id":"codex-session-1"}}
+{"type":"session_meta","payload":{"id":"codex-session-1","model_provider":"openai"}}
 {"type":"turn_context","payload":{"model":"gpt-5.6"}}
 {"type":"event_msg","timestamp":"2026-08-01T12:00:00Z","payload":{"type":"task_started"}}
 {"type":"event_msg","timestamp":"2026-08-01T12:00:00Z","payload":{"type":"token_count","turn_id":"turn-1","info":{"last_token_usage":{"input_tokens":10,"output_tokens":20,"cached_input_tokens":30,"cache_write_input_tokens":40,"total_tokens":100}}}}
