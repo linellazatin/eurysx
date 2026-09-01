@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eurysx"
-version = "0.0.1"
+version = "0.0.2"
 description = "Local usage intelligence for AI coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,10 @@ authors = [{name = "openlines"}]
 dependencies = []
 
 [project.scripts]
-eurysx = "eurysx:main"
+eurysx = "eurysx.cli:main"
 
 [tool.setuptools]
-py-modules = ["eurysx"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

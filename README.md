@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-Eurysx is an Act I work in progress. It is a local CLI, not a hosted service.
+> Eurysx v0.0.2 is in development. It is a local CLI, not a hosted service.
 
 ## Install
 
@@ -25,9 +25,16 @@ eurysx --agent all --month 2026-08
 eurysx --agent pi --from 2026-08-01 --to 2026-08-15
 eurysx --agent all --days 30 --output reports/usage.json
 eurysx --refresh-pricing
+eurysx collect --agent codex
+eurysx report --agent codex --days 30
 ```
 
 `reports/` is ignored by Git.
+
+`eurysx` collects current local metadata and then reports it. `collect` stores
+metadata only; `report` reads the local store without collecting. During Act II,
+the store is `data/eurysx.db` relative to the current project directory. Set
+`EURYSX_DATA_DIR` only to deliberately relocate it.
 
 Period selectors are mutually exclusive: `--days N`, `--weeks N`,
 `--from YYYY-MM-DD [--to YYYY-MM-DD]`, `--month YYYY-MM`,
@@ -214,8 +221,8 @@ file.
 ## Development
 
 ```bash
-python3 -m unittest -v test_eurysx.py
-python3 -m py_compile eurysx.py
+PYTHONPATH=src python3 -m unittest -v test_eurysx.py
+python3 -m py_compile src/eurysx/*.py
 ```
 
 Sanitized collector fixtures cover Claude Code, Codex, Pi, and OpenCode. The

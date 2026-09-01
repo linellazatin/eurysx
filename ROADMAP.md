@@ -79,31 +79,39 @@ Establish Eurysx as a trustworthy, installable local CLI.
   creation.
 - [x] Document the JSONC configuration contract, including required settings for
   enabled price sources and optional agent- versus provider-level policies.
-- [ ] Review the Act I release checklist, then create the user-owned v0.0.1
-  commit and tag.
+- [x] Review the Act I release checklist and record the v0.0.1 release. Git
+  tags remain user-owned operations.
 
 ## Act II: Continuity
 
 Make analysis incremental, reproducible, and privacy-preserving.
 
-- [ ] Split the Act I module only when this Act begins, retaining its collector
-  fixtures as the compatibility contract.
-- [ ] Move the CLI, shared event/path helpers, pricing, analysis, and output
-  into focused modules; place the four harness adapters in
-  `collectors/{claude_code,codex,opencode,pi}.py`.
-- [ ] Keep CLI agent selection as a fixed mapping. Do not add a collector
-  registry, plugin system, or abstract collector protocol until a real caller
-  needs one.
-- [ ] Keep each collector limited to discovery and metadata normalization;
-  pricing, storage, analysis, and rendering remain downstream.
-- [ ] Define one canonical usage-event envelope with event type, stable identity,
-  session/project identifiers, and source provenance.
-- [ ] Choose the durable money representation before storing aggregated cost.
-- [ ] Add a local SQLite store for normalized metadata only.
-- [ ] Add idempotent collection, source cursors, and safe deduplication.
-- [ ] Record collector/parser version diagnostics for changing harness formats.
-- [ ] Add project and session attribution where source metadata supports it.
-- [ ] Read reports from collected local history without rescanning every source.
+### Phase 1: Module seams
+
+- [x] Migrate the released CLI to the `src/eurysx/` package without changing its
+  reporting contract, then split its focused modules.
+- [x] Keep CLI agent selection as a fixed mapping with one adapter per supported
+  harness; collectors only discover and normalize local metadata.
+- [x] Keep pricing, storage, analysis, and rendering downstream of collectors;
+  use explicit collector roots in fixture tests.
+
+### Phase 2: Durable metadata store
+
+- [x] Add a project-local SQLite store for normalized metadata and decimal-text
+  recorded costs.
+- [x] Add stored-only reporting and a collect-only command.
+
+### Phase 3: Incremental sources
+
+- [ ] Move collection to source-level adapters with fingerprints, cursors, and
+  transactional source replacement.
+- [ ] Skip unchanged raw sources safely and retain usable history when one source
+  fails to refresh.
+- [ ] Record source parser versions and refresh failures with each source.
+
+### Phase 4: Attribution and diagnostics
+
+- [ ] Add best-effort project attribution and persisted collector diagnostics.
 
 ## Act III: Clarity
 
