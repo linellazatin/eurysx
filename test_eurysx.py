@@ -9,13 +9,41 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-import eurysx as app
+import eurysx.cli as app
+import eurysx.analysis
+import eurysx.paths as paths_module
+import eurysx.pricing as pricing_module
+import eurysx.paths
+import eurysx.pricing
+import eurysx.render
+from eurysx.collectors import claude_code, codex, opencode
+from eurysx.collectors import pi as pi_collector
+from eurysx.store import UsageStore
 
 
 FIXTURES = Path(__file__).parent / "tests" / "fixtures"
 
 
 class CollectorFixtureTests(unittest.TestCase):
+    def test_phase_one_modules_are_importable(self):
+        self.assertTrue(callable(claude_code.collect))
+        self.assertTrue(callable(codex.collect))
+        self.assertTrue(callable(opencode.collect))
+
+    def test_pi_collector_accepts_an_explicit_home_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session_dir = root / ".pi" / "agent" / "sessions" / "project"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.jsonl").write_text(
+                (FIXTURES / "pi" / "session.jsonl").read_text()
+            )
+
+            usages = pi_collector.collect(root)
+
+        self.assertEqual(len(usages), 2)
+        self.assertEqual(usages[0].session_id, "pi-session-1")
+
     def test_opencode_fixture_is_tracked(self):
         self.assertTrue((FIXTURES / "opencode" / "database.sql").is_file())
 
@@ -31,8 +59,7 @@ class CollectorFixtureTests(unittest.TestCase):
                 (FIXTURES / "claude_code" / "session.jsonl").read_text()
             )
 
-            with patch.object(app.Path, "home", return_value=root):
-                usages = app.ClaudeCodeExtractor.extract_usage()
+            usages = claude_code.collect(root)
 
         self.assertEqual(len(usages), 1)
         usage = usages[0]
@@ -51,7 +78,7 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertIsNone(usage.session_id)
 
     def test_codex_fixture_normalizes_usage_metrics_and_session_identity(self):
-        usages = app.CodexExtractor.extract_usage_from_session(
+        usages = codex.CodexExtractor.extract_usage_from_session(
             FIXTURES / "codex" / "rollout-session.jsonl"
         )
 
@@ -79,8 +106,7 @@ class CollectorFixtureTests(unittest.TestCase):
                 (FIXTURES / "pi" / "session.jsonl").read_text()
             )
 
-            with patch.object(app.Path, "home", return_value=root):
-                usages = app.PiAgentExtractor.extract_usage()
+            usages = pi_collector.collect(root)
 
         usage = next(item for item in usages if not item.is_metric_only)
         self.assertEqual(usage.model_id, "gpt-5.6")
@@ -104,8 +130,7 @@ class CollectorFixtureTests(unittest.TestCase):
             db_path = db_dir / "opencode.db"
             self._write_opencode_fixture(db_path)
 
-            with patch.object(app.Path, "home", return_value=root):
-                usages = app.OpenCodeExtractor.extract_usage()
+            usages = opencode.collect(root)
 
         usage = next(item for item in usages if not item.is_metric_only)
         self.assertEqual(usage.model_id, "gpt-5.6")
@@ -129,8 +154,7 @@ class CollectorFixtureTests(unittest.TestCase):
             db_path = db_dir / "opencode.db"
             self._write_opencode_fixture(db_path, assistant_first=True)
 
-            with patch.object(app.Path, "home", return_value=root):
-                usages = app.OpenCodeExtractor.extract_usage()
+            usages = opencode.collect(root)
 
         self.assertEqual(sum(item.model_turns for item in usages), 1)
 
@@ -177,6 +201,62 @@ class CollectorFixtureTests(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+
+
+class UsageStoreTests(unittest.TestCase):
+    def test_replacing_a_source_is_idempotent_and_preserves_decimal_cost(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            first = app.UsageEntry(
+                agent="codex", model_id="gpt-5.6", timestamp="2026-09-01T00:00:00Z",
+                input_tokens=1, output_tokens=2, cache_read_tokens=0, cache_write_tokens=0,
+                total_tokens=3, cost=0.123456789, cost_breakdown={"total": 0.123456789},
+                provider="openai", observed_provider="openai", cost_status="recorded",
+                session_id="session-1",
+            )
+            store.replace_source("codex:/session-1", "codex", "fingerprint-1", [first])
+            store.replace_source("codex:/session-1", "codex", "fingerprint-1", [first])
+
+            events = store.events(["codex"])
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["recorded_cost_usd"], "0.123456789")
+        self.assertEqual(events[0]["session_id"], "session-1")
+
+    def test_report_command_reads_store_without_calling_collectors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            entry = app.UsageEntry(
+                agent="codex", model_id="gpt-5.6", timestamp="2026-09-01T00:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+                total_tokens=1, cost=0.0, cost_breakdown={}, session_id="session-1",
+            )
+            store.replace_source("codex:/session-1", "codex", "fingerprint-1", [entry])
+            output = root / "report.json"
+            with patch("sys.argv", ["eurysx", "report", "--agent", "codex", "--output", str(output)]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
+                    patch.object(app, "collect", side_effect=AssertionError), \
+                    redirect_stdout(io.StringIO()):
+                app.main()
+            report = json.loads(output.read_text())
+
+        self.assertEqual(report["agents_analyzed"], ["codex"])
+
+    def test_failed_source_is_not_replaced(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            entry = app.UsageEntry(
+                agent="pi", model_id="gpt-5.6", timestamp="2026-09-01T00:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+                total_tokens=1, cost=0.0, cost_breakdown={}, session_id="session-1",
+            )
+            store.replace_source("pi:/session-1", "pi", "fingerprint-1", [entry])
+            store.record_failure("pi:/session-1", "parse failed")
+
+            events = store.events(["pi"])
+
+        self.assertEqual(len(events), 1)
 
 
 class PricingTests(unittest.TestCase):
@@ -282,14 +362,14 @@ class PricingTests(unittest.TestCase):
             config.write_text(json.dumps({"sources": {
                 "pi-models-store": {"enabled": True, "priority": 2, "refreshDays": 15}
             }}))
-            with patch.object(app.Path, "home", return_value=root):
+            with patch.object(pricing_module.Path, "home", return_value=root):
                 resolver = app.PricingResolver(config, root / "cache")
             result = resolver.resolve("provider", "model")
             self.assertEqual(result["source"], "pi-models-store")
             self.assertEqual(result["pricing"]["output"], 2)
             self.assertTrue((root / "cache" / "pricing-pi-models-store.json").exists())
 
-    @patch("eurysx.subprocess.run")
+    @patch("eurysx.pricing.subprocess.run")
     def test_aws_pricing_uses_configured_profile_and_region(self, run):
         run.return_value.returncode = 0
         run.return_value.stdout = json.dumps({"PriceList": []})
@@ -581,6 +661,12 @@ class PreferencesTests(unittest.TestCase):
 
 
 class DateRangeTests(unittest.TestCase):
+    def test_command_after_agent_is_not_consumed_as_an_agent(self):
+        args = app.parse_args(["--agent", "codex", "report"])
+
+        self.assertEqual(args.command, "report")
+        self.assertEqual(args.agent, ["codex"])
+
     @staticmethod
     def _parse(*arguments):
         with patch("sys.argv", ["eurysx", *arguments]):
@@ -641,14 +727,12 @@ class DateRangeTests(unittest.TestCase):
             root = Path(temp)
             resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
             patches = (
-                patch.object(app.AgentPaths, "detect_agents", return_value=list(agents)),
-                patch.object(app.ClaudeCodeExtractor, "extract_usage", return_value=entries("claude-code")),
-                patch.object(app.OpenCodeExtractor, "extract_usage", return_value=entries("opencode")),
-                patch.object(app.PiAgentExtractor, "extract_usage", return_value=entries("pi")),
-                patch.object(app.CodexExtractor, "extract_usage", return_value=entries("codex")),
+                patch.object(app, "detect_agents", return_value=list(agents)),
+                patch.object(app, "collect", side_effect=entries),
                 patch.object(app, "PricingResolver", return_value=resolver),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
             )
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            with patches[0], patches[1], patches[2], patches[3]:
                 for selected_agent in ("all", *agents):
                     for index, period in enumerate(periods):
                         output_path = root / f"{selected_agent}-{index}.json"
@@ -688,7 +772,8 @@ class DateRangeTests(unittest.TestCase):
             terminal = io.StringIO()
             with patch("sys.argv", [
                 "eurysx", "--agent", "claude-code", "--days", "3", "--output", str(output_path),
-            ]), patch.object(app.ClaudeCodeExtractor, "extract_usage", return_value=[aggregate]), \
+            ]), patch.object(app, "collect", return_value=[aggregate]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=Path(temp) / "data"), \
                     redirect_stdout(terminal):
                 app.main()
             report = json.loads(output_path.read_text())
@@ -708,9 +793,9 @@ class PricingPathTests(unittest.TestCase):
     def test_defaults_use_the_current_eurysx_working_directory(self):
         root = Path("/workspace/eurysx")
 
-        with patch.object(app.Path, "cwd", return_value=root):
+        with patch.object(paths_module.Path, "cwd", return_value=root):
             self.assertEqual(
-                app.get_eurysx_dirs(environ={}),
+                paths_module.get_eurysx_dirs(environ={}),
                 (root / "config", root / "cache"),
             )
 
@@ -719,7 +804,7 @@ class PricingPathTests(unittest.TestCase):
             root = Path(temp)
             config_dir = root / "config-override"
             cache_dir = root / "cache-override"
-            config, cache = app.get_eurysx_dirs(
+            config, cache = paths_module.get_eurysx_dirs(
                 environ={
                     "EURYSX_CONFIG_DIR": str(config_dir),
                     "EURYSX_CACHE_DIR": str(cache_dir),
@@ -735,7 +820,7 @@ class PricingPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config_dir, cache_dir = root / "config", root / "cache"
-            with patch.object(app, "get_eurysx_dirs", return_value=(config_dir, cache_dir)):
+            with patch.object(pricing_module, "get_eurysx_dirs", return_value=(config_dir, cache_dir)):
                 resolver = app.PricingResolver()
 
             self.assertEqual(resolver.config_path, config_dir / "pricing.jsonc")
@@ -764,7 +849,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.1")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.2")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:
