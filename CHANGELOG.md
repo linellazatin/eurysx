@@ -1,6 +1,19 @@
 # Changelog
 
-## [0.0.1] - Initial Pre-release: Very early stuff
+## [0.0.2] - Local store implementation + module restructure
+
+### Added
+
+- Local SQLite usage storage with decimal-text recorded costs.
+- `eurysx collect` and `eurysx report` workflows; stored reports do not collect
+  agent history.
+
+### Changed
+
+- Source layout now uses the `src/eurysx` package
+- CLI orchestration now delegates to focused collector, pricing, analysis, and rendering modules.
+
+## [0.0.1] - Core CLI baseline
 
 ### Added
 

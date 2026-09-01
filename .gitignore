@@ -7,6 +7,7 @@ __pycache__/
 cache/
 config/pricing.jsonc
 config/preferences.jsonc
+data/
 
 # Generated reports and package artifacts
 reports/
