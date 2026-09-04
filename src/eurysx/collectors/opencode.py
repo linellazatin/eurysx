@@ -2,11 +2,16 @@
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import List, Optional
 
 from ..models import UsageEntry
 from .paths import AgentPaths
+from .sources import Source, fingerprint_paths
+
+
+PARSER_VERSION = "2"
 
 
 class OpenCodeExtractor:
@@ -14,16 +19,19 @@ class OpenCodeExtractor:
 
     @staticmethod
     def extract_usage(home: Optional[Path] = None) -> List[UsageEntry]:
+        """Whole database is one source. sqlite3 errors propagate to the caller."""
         db_path = AgentPaths.opencode(home)
         if not db_path:
             return []
-        try:
-            conn = sqlite3.connect(db_path)
+        with closing(sqlite3.connect(db_path)) as conn:
             cursor = conn.cursor()
             usages = []
-            for session_id, timestamp_ms, model_json, input_tokens, output_tokens, cache_read, cache_write, cost in cursor.execute("""
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(session)")}
+            directory = ", directory" if "directory" in columns else ""
+            session_projects = {}
+            for session_id, timestamp_ms, model_json, input_tokens, output_tokens, cache_read, cache_write, cost, *rest in cursor.execute(f"""
                 SELECT id, time_created, model, tokens_input, tokens_output,
-                       tokens_cache_read, tokens_cache_write, cost
+                       tokens_cache_read, tokens_cache_write, cost{directory}
                 FROM session
                 WHERE tokens_input > 0 OR tokens_output > 0 OR tokens_cache_read > 0 OR tokens_cache_write > 0 OR cost > 0
                 ORDER BY time_created
@@ -36,6 +44,8 @@ class OpenCodeExtractor:
                     model_id = str(model_json or 'unknown')
                     provider = None
                 total_tokens = sum((input_tokens or 0, output_tokens or 0, cache_read or 0, cache_write or 0))
+                project_id = rest[0] if rest else None
+                session_projects[session_id] = project_id
                 usages.append(UsageEntry(
                     agent='opencode', model_id=model_id, timestamp=str(timestamp_ms),
                     input_tokens=input_tokens or 0, output_tokens=output_tokens or 0,
@@ -44,7 +54,7 @@ class OpenCodeExtractor:
                     cost_breakdown={'total': cost or 0.0} if cost is not None else {},
                     provider=provider, observed_provider=provider,
                     cost_status='recorded' if cost is not None else 'unknown',
-                    session_id=session_id
+                    session_id=session_id, project_id=project_id
                 ))
 
             messages = cursor.execute("""
@@ -66,6 +76,7 @@ class OpenCodeExtractor:
                     agent='opencode', model_id=message.get('modelID', 'unknown'), timestamp=str(timestamp_ms),
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
+                    project_id=session_projects.get(session_id),
                     provider=message.get('providerID') or message.get('provider'),
                     observed_provider=message.get('providerID') or message.get('provider'),
                     model_requests=1,
@@ -90,15 +101,29 @@ class OpenCodeExtractor:
                     agent='opencode', model_id=model_id, timestamp=str(timestamp_ms),
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
+                    project_id=session_projects.get(session_id),
                     provider=provider, observed_provider=provider,
                     model_tool_calls=1, is_metric_only=True
                 ))
-            conn.close()
-            return usages
-        except sqlite3.Error as e:
-            print(f"Error reading OpenCode database: {e}")
-            return []
+        return usages
+
+
+def enumerate_sources(home: Optional[Path] = None) -> List[Source]:
+    """One source: the whole OpenCode database."""
+    db_path = AgentPaths.opencode(home)
+    if not db_path:
+        return []
+    return [Source(
+        key=f"opencode:{db_path}",
+        fingerprint=fingerprint_paths([db_path]),
+        parser_version=PARSER_VERSION,
+        parse=lambda: OpenCodeExtractor.extract_usage(home),
+    )]
 
 
 def collect(home: Optional[Path] = None) -> List[UsageEntry]:
-    return OpenCodeExtractor.extract_usage(home)
+    return [
+        entry
+        for source in enumerate_sources(home)
+        for entry in source.parse()
+    ]

@@ -28,6 +28,7 @@ class UsageEntry:
     pricing_fetched_at: Optional[str] = None
     is_aggregated: bool = False
     session_id: Optional[str] = None
+    project_id: Optional[str] = None
     model_requests: int = 0
     model_turns: int = 0
     model_tool_calls: int = 0

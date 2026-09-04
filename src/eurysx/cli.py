@@ -1,7 +1,6 @@
 """Command-line orchestration for Eurysx."""
 
 import argparse
-import hashlib
 import json
 import re
 import sys
@@ -10,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .analysis import UsageAnalyzer
-from .collectors import collect, detect_agents
+from .collectors import collect_sources, detect_agents
 from .models import AgentStats, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
@@ -58,16 +57,6 @@ def _year(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a valid four-digit year") from exc
 
 
-def _entries_fingerprint(usages: List[UsageEntry]) -> str:
-    metadata = [
-        (usage.timestamp, usage.session_id, usage.model_id, usage.provider,
-         usage.total_tokens, usage.model_requests, usage.model_turns,
-         usage.model_tool_calls, usage.is_metric_only, usage.is_aggregated)
-        for usage in usages
-    ]
-    return hashlib.sha256(json.dumps(metadata, separators=(",", ":")).encode()).hexdigest()
-
-
 def _usage_from_store(record: Dict[str, Any]) -> UsageEntry:
     recorded = record["recorded_cost_usd"]
     cost = float(recorded) if recorded is not None else 0.0
@@ -80,7 +69,8 @@ def _usage_from_store(record: Dict[str, Any]) -> UsageEntry:
         cost_breakdown={"total": cost} if recorded is not None else {},
         provider=record["provider"], observed_provider=record["observed_provider"],
         cost_status="recorded" if recorded is not None else "unknown",
-        session_id=record["session_id"], model_requests=record["model_requests"],
+        session_id=record["session_id"], project_id=record["project_id"],
+        model_requests=record["model_requests"],
         model_turns=record["model_turns"], model_tool_calls=record["model_tool_calls"],
         is_metric_only=record["event_type"] == "metric",
         is_aggregated=record["event_type"] == "aggregate_usage",
@@ -190,6 +180,33 @@ def get_date_range(args: argparse.Namespace,
     return today - timedelta(days=days - 1), today, label
 
 
+def _refresh_store(store, agents):
+    """Collect per raw source, skipping sources whose fingerprint and parser version are unchanged."""
+    for agent in agents:
+        print(f"\nCollecting data from {agent}...")
+        updated = skipped = failed = 0
+        for source in collect_sources(agent):
+            state = store.source_state(source.key)
+            if (
+                state
+                and state["fingerprint"] == source.fingerprint
+                and state["parser_version"] == source.parser_version
+            ):
+                skipped += 1
+                continue
+            try:
+                entries = source.parse()
+            except Exception as error:
+                store.record_failure(source.key, error)
+                failed += 1
+                print(f"  Refresh failed for {source.key}: {error}")
+                continue
+            store.replace_source(source.key, agent, source.fingerprint, entries,
+                                 parser_version=source.parser_version)
+            updated += 1
+        print(f"  Updated {updated} source(s), {skipped} unchanged, {failed} failed.")
+
+
 def main(argv=None):
     """Run a default collection/report, collection-only, or stored report."""
     args = parse_args(argv)
@@ -211,41 +228,41 @@ def main(argv=None):
             print("Error: 'all' cannot be combined with other agents.")
             print("Usage: --agent all OR --agent claude-code opencode")
             return
-        agents_to_analyze = detect_agents() if args.command != "report" else None
-        if not agents_to_analyze and args.command != "report":
+        read_agents = None
+        agents_to_analyze = None if args.command == "report" else detect_agents()
+        if args.command != "report" and not agents_to_analyze:
             print("No agents detected. Check if any agents are installed.")
             return
     else:
         agents_to_analyze = args.agent
+        read_agents = args.agent
 
     agent_data = {}
     if args.command == "report":
-        for record in store.events(agents_to_analyze):
-            usage = _usage_from_store(record)
-            agent_data.setdefault(usage.agent, []).append(usage)
-        if not agent_data:
-            print("No stored usage data found. Run eurysx collect first.")
-            return
-        print(f"Reporting stored agents: {', '.join(agent_data)}")
-        for usages in agent_data.values():
-            apply_pricing(usages, resolver, preferences)
+        print("Reporting stored agents without collecting.")
     else:
         print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
-        for agent in agents_to_analyze:
-            print(f"\nCollecting data from {agent}...")
-            usages = collect(agent)
-            if usages:
-                store.replace_source(
-                    f"collector:{agent}", agent, _entries_fingerprint(usages), usages
-                )
-                print(f"  Found {len(usages)} usage entries")
-                agent_data[agent] = usages
-            else:
-                print(f"  No usage data found for {agent}")
+        _refresh_store(store, agents_to_analyze)
         if args.command == "collect":
             return
-        for usages in agent_data.values():
-            apply_pricing(usages, resolver, preferences)
+    for failure in store.failing_sources():
+        print(
+            f"Warning: last refresh failed for {failure['source_key']}; "
+            f"reporting last good data ({failure['last_error']}).",
+            file=sys.stderr,
+        )
+    for record in store.events(read_agents):
+        usage = _usage_from_store(record)
+        agent_data.setdefault(usage.agent, []).append(usage)
+    if agents_to_analyze:
+        agent_data = {a: agent_data[a] for a in agents_to_analyze if a in agent_data}
+    if not agent_data:
+        print("No stored usage data found. Run eurysx collect first.")
+        return
+    if args.command == "report":
+        print(f"Reporting stored agents: {', '.join(agent_data)}")
+    for usages in agent_data.values():
+        apply_pricing(usages, resolver, preferences)
 
     all_stats = {}
     for agent, usages in agent_data.items():

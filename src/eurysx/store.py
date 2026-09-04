@@ -86,6 +86,8 @@ class UsageStore:
                     ON events(agent, timestamp);
             """)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            # Idempotent purge of Phase 2 per-agent bulk rows (source_key 'collector:<agent>').
+            connection.execute("DELETE FROM sources WHERE source_key LIKE 'collector:%'")
 
     @staticmethod
     def _event_type(entry):
@@ -142,6 +144,14 @@ class UsageStore:
                 (str(error), source_key),
             )
 
+    def failing_sources(self):
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT source_key, last_error FROM sources"
+                " WHERE last_error IS NOT NULL ORDER BY source_key"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def events(self, agents=None):
         agents = list(agents or [])
         query = "SELECT * FROM events"
@@ -153,9 +163,10 @@ class UsageStore:
         with self._connection() as connection:
             return [dict(row) for row in connection.execute(query, parameters)]
 
-    def source_fingerprint(self, source_key):
+    def source_state(self, source_key):
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT fingerprint FROM sources WHERE source_key = ?", (source_key,)
+                "SELECT fingerprint, parser_version, last_error FROM sources WHERE source_key = ?",
+                (source_key,),
             ).fetchone()
-        return row["fingerprint"] if row else None
+        return dict(row) if row else None

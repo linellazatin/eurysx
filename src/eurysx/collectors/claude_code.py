@@ -7,6 +7,10 @@ from typing import Dict, List, Optional
 
 from ..models import UsageEntry, UsageMetrics
 from .paths import AgentPaths
+from .sources import Source, fingerprint_paths
+
+
+PARSER_VERSION = "1"
 
 
 class ClaudeCodeExtractor:
@@ -18,13 +22,9 @@ class ClaudeCodeExtractor:
         cache_path = AgentPaths.claude_code(home)
         if not cache_path:
             return []
-        
-        try:
-            with open(cache_path, 'r') as f:
-                stats = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Error reading Claude Code data: {e}")
-            return []
+
+        with open(cache_path, 'r') as f:
+            stats = json.load(f)
         
         usages = []
         transcript_metrics = ClaudeCodeExtractor.extract_transcript_metrics(home)
@@ -93,5 +93,23 @@ class ClaudeCodeExtractor:
         return dict(metrics)
 
 
+def enumerate_sources(home: Optional[Path] = None) -> List[Source]:
+    """One source: the stats cache, whose transcript-derived metrics depend on all transcripts."""
+    cache_path = AgentPaths.claude_code(home)
+    if not cache_path:
+        return []
+    backing = [cache_path, *AgentPaths.claude_transcripts(home)]
+    return [Source(
+        key=f"claude-code:{cache_path}",
+        fingerprint=fingerprint_paths(backing),
+        parser_version=PARSER_VERSION,
+        parse=lambda: ClaudeCodeExtractor.extract_usage(home),
+    )]
+
+
 def collect(home: Optional[Path] = None) -> List[UsageEntry]:
-    return ClaudeCodeExtractor.extract_usage(home)
+    return [
+        entry
+        for source in enumerate_sources(home)
+        for entry in source.parse()
+    ]
