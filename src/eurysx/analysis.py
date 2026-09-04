@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import List, Optional
 
-from .models import AgentStats, UsageEntry
+from .models import AgentDisplay, AgentStats, UsageEntry
 
 
 class UsageAnalyzer:
@@ -22,7 +22,27 @@ class UsageAnalyzer:
         except (ValueError, IndexError):
             pass
         return None
-    
+
+    @staticmethod
+    def display_period(
+        usages: List[UsageEntry],
+        start_date: Optional[date],
+        end_date: date,
+        period_label: str,
+        is_all_time: bool,
+    ) -> AgentDisplay:
+        """Per-agent period shown in the terminal report; all-time mode pins it to first usage."""
+        if not is_all_time or not usages:
+            return AgentDisplay(start_date, end_date, period_label)
+        dates = [
+            usage_date for usage in usages
+            if (usage_date := UsageAnalyzer.extract_date_from_timestamp(usage.timestamp))
+        ]
+        if dates:
+            first = min(dates)
+            return AgentDisplay(first, end_date, f"ALL TIME (data from {first})")
+        return AgentDisplay(end_date, end_date, period_label)
+
     @staticmethod
     def filter_by_date_range(usages: List[UsageEntry], start_date: Optional[date],
                              end_date: date, include_aggregated: bool = True) -> List[UsageEntry]:
@@ -142,6 +162,13 @@ class UsageAnalyzer:
         if stats.metered_tokens:
             stats.priced_token_coverage = (
                 (stats.metered_tokens - stats.unknown_cost_tokens) / stats.metered_tokens
+            )
+        total_cache_tokens = stats.total_cache_read_tokens + stats.total_cache_write_tokens
+        if total_cache_tokens > 0:
+            stats.cache_read_ratio = stats.total_cache_read_tokens / total_cache_tokens
+        if stats.total_cache_read_tokens > 0 and stats.total_cache_write_tokens > 0:
+            stats.cache_efficiency_ratio = (
+                stats.total_cache_read_tokens / stats.total_cache_write_tokens
             )
         
         rate_start_date = start_date

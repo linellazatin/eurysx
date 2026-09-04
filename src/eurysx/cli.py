@@ -10,10 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import __version__
 from .analysis import UsageAnalyzer
 from .collectors import collect_sources, detect_agents
-from .models import AgentStats, UsageEntry
+from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
-from .render import Colors, print_agent_header, print_single_agent_report, print_summary_comparison
+from .render import (
+    Colors, build_json_report, print_agent_header,
+    print_single_agent_report, print_summary_comparison,
+)
 from .store import UsageStore
 
 
@@ -264,89 +267,35 @@ def main(argv=None):
     for usages in agent_data.values():
         apply_pricing(usages, resolver, preferences)
 
-    all_stats = {}
+    report = AnalysisReport(start_date=start_date, end_date=end_date, period_label=period_label)
+    report.pricing = {
+        "config_file": str(resolver.config_path),
+        "sources": resolver.fetched_at,
+        "warnings": resolver.warnings,
+    }
+    report.preferences = {
+        "config_file": str(preferences.config_path),
+        "warnings": preferences.warnings,
+    }
+
     for agent, usages in agent_data.items():
         print(f"\nAnalyzing {agent}...")
-        display_start_date = start_date
-        display_period_label = period_label
-        if is_all_time and usages:
-            dates = [
-                usage_date for usage in usages
-                if (usage_date := UsageAnalyzer.extract_date_from_timestamp(usage.timestamp))
-            ]
-            if dates:
-                display_start_date = min(dates)
-                display_period_label = f"ALL TIME (data from {display_start_date})"
-            else:
-                display_start_date = end_date
-
         stats = UsageAnalyzer.analyze_agent(
             agent, usages, start_date, end_date, period_label,
             include_aggregated=is_all_time,
         )
-        all_stats[agent] = stats
-        print_single_agent_report(
-            agent, usages, stats, display_start_date, end_date, display_period_label
+        report.agent_stats[agent] = stats
+        report.agent_displays[agent] = UsageAnalyzer.display_period(
+            usages, start_date, end_date, period_label, is_all_time,
         )
+        print_single_agent_report(report, agent)
 
     if len(agent_data) > 1:
-        print_summary_comparison(all_stats)
+        print_summary_comparison(report)
 
     if args.output:
-        output_result = {
-            "analysis_period": {
-                "start": str(start_date) if start_date else "ALL TIME",
-                "end": str(end_date),
-                "label": period_label,
-            },
-            "agents_analyzed": list(all_stats.keys()),
-            "pricing": {
-                "config_file": str(resolver.config_path),
-                "sources": resolver.fetched_at,
-                "warnings": resolver.warnings,
-            },
-            "preferences": {
-                "config_file": str(preferences.config_path),
-                "warnings": preferences.warnings,
-            },
-            "agent_stats": {},
-        }
-        for agent, stats in all_stats.items():
-            output_result["agent_stats"][agent] = {
-                "model_requests": stats.total_model_requests,
-                "model_turns": stats.total_model_turns,
-                "model_tool_calls": stats.total_model_tool_calls,
-                "total_input_tokens": stats.total_input_tokens,
-                "total_output_tokens": stats.total_output_tokens,
-                "total_cache_read_tokens": stats.total_cache_read_tokens,
-                "total_cache_write_tokens": stats.total_cache_write_tokens,
-                "total_tokens": stats.total_tokens,
-                "total_cost": stats.total_cost,
-                "known_cost": stats.known_cost,
-                "unknown_cost_count": stats.unknown_cost_count,
-                "unknown_cost_tokens": stats.unknown_cost_tokens,
-                "priced_token_coverage": stats.priced_token_coverage,
-                "metered_tokens": stats.metered_tokens,
-                "non_metered_tokens": stats.non_metered_tokens,
-                "billing_mode_tokens": stats.billing_mode_tokens,
-                "route_breakdown": stats.route_breakdown,
-                "cost_status_counts": stats.cost_status_counts,
-                "pricing_sources": sorted(stats.pricing_sources),
-                "pricing_fetched_at": stats.pricing_fetched_at,
-                "daily_cost": stats.daily_cost,
-                "weekly_cost": stats.weekly_cost,
-                "monthly_cost": stats.monthly_cost,
-                "quarterly_cost": stats.quarterly_cost,
-                "yearly_cost": stats.yearly_cost,
-                "usage_entries": stats.usage_entries,
-                "sessions_count": stats.sessions_count,
-                "unique_models": sorted(stats.unique_models),
-                "model_breakdown": stats.model_breakdown,
-                "daily_activity": stats.daily_activity,
-                "scope_warnings": stats.scope_warnings,
-            }
         with open(args.output, "w") as output_file:
-            json.dump(output_result, output_file, indent=2)
+            json.dump(build_json_report(report), output_file, indent=2)
 
 
 if __name__ == "__main__":
