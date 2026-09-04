@@ -103,15 +103,14 @@ Make analysis incremental, reproducible, and privacy-preserving.
 
 ### Phase 3: Incremental sources
 
-- [ ] Move collection to source-level adapters with fingerprints, cursors, and
-  transactional source replacement.
-- [ ] Skip unchanged raw sources safely and retain usable history when one source
+- ~~[ ] Move collection to source-level adapters with fingerprints, cursors, and transactional source replacement.~~
+- [x] Skip unchanged raw sources safely and retain usable history when one source
   fails to refresh.
-- [ ] Record source parser versions and refresh failures with each source.
+- [x] Record source parser versions and refresh failures with each source.
 
 ### Phase 4: Attribution and diagnostics
 
-- [ ] Add best-effort project attribution and persisted collector diagnostics.
+- [x] Add best-effort project attribution and persisted collector diagnostics.
 
 ## Act III: Clarity
 

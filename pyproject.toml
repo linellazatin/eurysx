@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eurysx"
-version = "0.0.2"
+version = "0.0.3"
 description = "Local usage intelligence for AI coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
