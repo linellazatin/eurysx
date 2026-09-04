@@ -1,10 +1,9 @@
-"""Terminal report rendering."""
+"""Report rendering: terminal presentation and the JSON export payload."""
 
 import sys
-from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 
-from .models import AgentStats, UsageEntry
+from .models import AgentStats, AnalysisReport
 
 
 class Colors:
@@ -53,20 +52,20 @@ def print_agent_header(agent: str, title: str = "USAGE ANALYSIS"):
     print(f"{color}{'=' * 80}{Colors.reset}")
 
 
-def print_single_agent_report(agent: str, usages: List[UsageEntry], 
-                             stats: AgentStats, start_date: datetime.date, 
-                             end_date: datetime.date, period_label: str):
-    """Print detailed report for a single agent in pi.py format."""
+def print_single_agent_report(report: AnalysisReport, agent: str):
+    """Print detailed terminal report for a single agent from the structured result."""
     color = AGENT_COLORS.get(agent, Colors.reset)
+    stats = report.agent_stats[agent]
+    display = report.agent_displays[agent]
     
     # Print header with color
     print_agent_header(agent)
     
-    print(f"\n{color}Analysis Period: {start_date} to {end_date} ({period_label}){Colors.reset}")
+    print(f"\n{color}Analysis Period: {display.start_date} to {display.end_date} ({display.label}){Colors.reset}")
     for warning in stats.scope_warnings:
         print(f"Warning: {warning}")
     
-    if not usages:
+    if stats.usage_entries == 0:
         print(f"\n{color}No usage data found for {AGENT_NAMES.get(agent, agent.upper())}{Colors.reset}")
         return
     
@@ -118,7 +117,7 @@ def print_single_agent_report(agent: str, usages: List[UsageEntry],
     print(f"{color}{'=' * 80}{Colors.reset}")
     
     days_active = len(stats.daily_activity) if stats.daily_activity else 1
-    total_days = (end_date - start_date).days + 1
+    total_days = (display.end_date - display.start_date).days + 1
     
     print(f"\nDaily (across all {total_days} days):        ${stats.daily_cost:>14,.6f}")
     print(f"Daily (active days only, {days_active} days): ${stats.daily_cost if days_active > 0 else 0:>14,.6f}")
@@ -202,13 +201,11 @@ def print_single_agent_report(agent: str, usages: List[UsageEntry],
     print(f"{color}{'=' * 80}{Colors.reset}")
     
     total_cache_tokens = stats.total_cache_read_tokens + stats.total_cache_write_tokens
-    if total_cache_tokens > 0:
-        cache_ratio = stats.total_cache_read_tokens / total_cache_tokens
-        print(f"Cache read ratio: {cache_ratio:.1%} ({stats.total_cache_read_tokens:,} / {total_cache_tokens:,})")
-    
-    if stats.total_cache_read_tokens > 0 and stats.total_cache_write_tokens > 0:
-        efficiency = stats.total_cache_read_tokens / stats.total_cache_write_tokens
-        print(f"Cache efficiency ratio: {efficiency:.1f}:1")
+    if stats.cache_read_ratio is not None:
+        print(f"Cache read ratio: {stats.cache_read_ratio:.1%} ({stats.total_cache_read_tokens:,} / {total_cache_tokens:,})")
+
+    if stats.cache_efficiency_ratio is not None:
+        print(f"Cache efficiency ratio: {stats.cache_efficiency_ratio:.1f}:1")
     
     # ===== COST ANALYSIS =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -251,8 +248,8 @@ def print_single_agent_report(agent: str, usages: List[UsageEntry],
     print(f"Model Pricing Source: {source_details}")
 
 
-def print_summary_comparison(all_stats: Dict[str, AgentStats]):
-    """Print comparison summary across multiple agents."""
+def print_summary_comparison(report: AnalysisReport):
+    """Print comparison summary across multiple agents from the structured result."""
     # Use reset colors for comparison (header is already colored per-agent)
     print(f"\n{'=' * 80}")
     print("COMPARISON SUMMARY")
@@ -267,7 +264,7 @@ def print_summary_comparison(all_stats: Dict[str, AgentStats]):
     combined_tool_calls = 0
     combined_cost = 0.0
     
-    for agent, stats in all_stats.items():
+    for agent, stats in report.agent_stats.items():
         if stats.usage_entries > 0:
             agent_name = agent.replace('-', ' ').title()
             print(
@@ -291,3 +288,60 @@ def print_summary_comparison(all_stats: Dict[str, AgentStats]):
         f"${combined_cost:>14,.2f}"
     )
     print("=" * 105)
+
+
+def _agent_stats_dict(stats: AgentStats) -> Dict:
+    """Serializable per-agent stats block for the JSON report."""
+    return {
+        "model_requests": stats.total_model_requests,
+        "model_turns": stats.total_model_turns,
+        "model_tool_calls": stats.total_model_tool_calls,
+        "total_input_tokens": stats.total_input_tokens,
+        "total_output_tokens": stats.total_output_tokens,
+        "total_cache_read_tokens": stats.total_cache_read_tokens,
+        "total_cache_write_tokens": stats.total_cache_write_tokens,
+        "total_tokens": stats.total_tokens,
+        "total_cost": stats.total_cost,
+        "known_cost": stats.known_cost,
+        "unknown_cost_count": stats.unknown_cost_count,
+        "unknown_cost_tokens": stats.unknown_cost_tokens,
+        "priced_token_coverage": stats.priced_token_coverage,
+        "cache_read_ratio": stats.cache_read_ratio,
+        "cache_efficiency_ratio": stats.cache_efficiency_ratio,
+        "metered_tokens": stats.metered_tokens,
+        "non_metered_tokens": stats.non_metered_tokens,
+        "billing_mode_tokens": stats.billing_mode_tokens,
+        "route_breakdown": stats.route_breakdown,
+        "cost_status_counts": stats.cost_status_counts,
+        "pricing_sources": sorted(stats.pricing_sources),
+        "pricing_fetched_at": stats.pricing_fetched_at,
+        "daily_cost": stats.daily_cost,
+        "weekly_cost": stats.weekly_cost,
+        "monthly_cost": stats.monthly_cost,
+        "quarterly_cost": stats.quarterly_cost,
+        "yearly_cost": stats.yearly_cost,
+        "usage_entries": stats.usage_entries,
+        "sessions_count": stats.sessions_count,
+        "unique_models": sorted(stats.unique_models),
+        "model_breakdown": stats.model_breakdown,
+        "daily_activity": stats.daily_activity,
+        "scope_warnings": stats.scope_warnings,
+    }
+
+
+def build_json_report(report: AnalysisReport) -> Dict:
+    """Assemble the JSON `--output` payload from a structured analysis result."""
+    return {
+        "analysis_period": {
+            "start": str(report.start_date) if report.start_date else "ALL TIME",
+            "end": str(report.end_date),
+            "label": report.period_label,
+        },
+        "agents_analyzed": list(report.agent_stats.keys()),
+        "pricing": report.pricing,
+        "preferences": report.preferences,
+        "agent_stats": {
+            agent: _agent_stats_dict(stats)
+            for agent, stats in report.agent_stats.items()
+        },
+    }

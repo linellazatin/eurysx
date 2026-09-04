@@ -114,35 +114,74 @@ Make analysis incremental, reproducible, and privacy-preserving.
 
 ## Act III: Clarity
 
-Make Eurysx useful for decisions and automation.
+Make Eurysx useful for decisions and automation. Each phase lands, gets
+verified, updates README, CHANGELOG, and the `docs/` reference files, and is re-assessed against the live
+codebase before the next phase starts — no phase begins on assumption.
+Version bumps land on request (git operations stay user-owned).
 
-### Phase 1: Result seams
+### Phase 1: Settle inherited gaps
 
-- [ ] Formalize one structured analysis result (period, per-agent stats, cost
+- [x] Snapshot today's JSON `--output` shape and the terminal report's key
+  sections in a regression test, as the pre-refactor baseline Phase 2 and
+  Phase 6 diff against.
+- [x] Move cache-read ratio and cache-efficiency ratio out of `render.py`'s
+  terminal-only path into `analysis.py`/`AgentStats`, so JSON export reports
+  the same numbers the terminal already shows.
+
+### Phase 2: Result seams
+
+- [x] Extend the Phase 1 baseline test with value assertions (not just key
+  shape) over a controlled fixture, using hermetic pricing/preferences config,
+  so the refactor cannot silently change a field's value or type.
+- [x] Formalize one structured analysis result (period, per-agent stats, cost
   coverage, pricing provenance, warnings) that analysis produces before any
   presentation; terminal renderers consume it unchanged.
-- [ ] Move JSON payload assembly out of the CLI so the CLI only invokes
+- [x] Move JSON payload assembly out of the CLI so the CLI only invokes
   collection, analysis, and a presenter.
-- [ ] Land this as a pure refactor: terminal and JSON output unchanged.
+- [x] Land this as a pure refactor against the Phase 1 baseline: output is
+  unchanged except the Phase 1 cache-ratio fix. `store.events()` and its
+  query path are out of scope here; they belong to Phase 3.
 
-### Phase 2: Query surface
+### Phase 3A: SQL pushdown and indices
 
-- [ ] Extend store reads with model, provider, and billing-mode filters; add
-  the matching CLI selectors alongside `--agent`.
-- [ ] Add grouping dimensions to the analysis result: model, provider, project,
-  session, and day, where the stored metadata supports them.
-- [ ] Add explicit period-to-period comparisons computed from the same store
-  query path.
+- [ ] Push agent and date-range filtering into `store.events()` WHERE clauses,
+  replacing the load-then-filter-in-Python path (claude-code aggregate
+  handling must behave identically in selected ranges).
+- [ ] Add indices on `provider`, `model_id`, `project_id`, and `session_id`.
+- [ ] No new CLI flags; report output unchanged — proven by the Phase 1/2
+  baseline tests plus a SQL-vs-Python equivalence test.
 
-### Phase 3: Richer metrics
+### Phase 3B: Filters and CLI selectors
 
-- [ ] Report cache ratios and request/turn/tool ratios alongside token totals.
+- [ ] Add model, provider, and billing-mode filter parameters to `store.events()`.
+- [ ] Add `--model`, `--provider`, and `--billing-mode` selectors, combinable
+  with `--agent` and the period selectors.
+- [ ] Tests per selector and for combinations, all routed through SQL.
+
+### Phase 3C: Grouping dimensions
+
+- [ ] Group the analysis result by model, provider, project, session, and day,
+  where stored metadata supports them (`project_id`/`session_id` only where
+  attributed).
+- [ ] Show the new dimensions in terminal and JSON output as additive fields;
+  tests per dimension including the unattributed-metadata case.
+
+### Phase 3D: Period-to-period comparisons
+
+- [ ] Compare two periods computed from the same store query path
+  (e.g., previous period vs current).
+- [ ] Terminal comparison table and additive JSON section, with tests.
+
+### Phase 4: Richer metrics
+
+- [ ] Add request/turn/tool ratios alongside the cache ratios Phase 1 already
+  relocated into `AgentStats`.
 - [ ] Report project and session usage and cost where `project_id` or
   `session_id` is attributed.
 - [ ] Flag metrics that include last-good data from sources whose most recent
   refresh failed.
 
-### Phase 4: Doctor diagnostics
+### Phase 5: Doctor diagnostics
 
 - [ ] Add `eurysx doctor`: detected harnesses, per-source state (collected at,
   parser version, fingerprint changes, last error), pricing source and cache
@@ -150,14 +189,15 @@ Make Eurysx useful for decisions and automation.
 - [ ] Reuse the persisted diagnostics and existing resolver and preference
   warnings; introduce no new state.
 
-### Phase 5: Stable exports
+### Phase 6: Stable exports
 
-- [ ] Version the JSON report contract and document it as stable; the current
-  shape is explicitly unstable history.
+- [ ] Version the JSON report contract and document it as stable; the shape
+  extended in Phase 1 is explicitly unstable history until this lands.
 - [ ] Add CSV and Markdown presenters rendered from the same analysis result.
-- [ ] Pin every export contract with tests.
+- [ ] Pin every export contract with tests, diffed against the Phase 1
+  baseline snapshot.
 
-### Phase 6: Pacing and insights
+### Phase 7: Pacing and insights
 
 - [ ] Add deterministic budget pacing and insights only when their inputs are
   present and trustworthy.

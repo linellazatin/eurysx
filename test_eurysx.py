@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import eurysx.cli as app
 import eurysx.analysis
+import eurysx.models as models
 import eurysx.paths as paths_module
 import eurysx.pricing as pricing_module
 import eurysx.paths
@@ -577,6 +578,16 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.total_cost, 3.0)
         self.assertEqual(stats.daily_cost, 1.0)
 
+    @staticmethod
+    def _terminal_report(stats):
+        """Structured result a terminal-render test needs."""
+        period = date(2026, 8, 1)
+        return app.AnalysisReport(
+            start_date=period, end_date=period, period_label="1d",
+            agent_stats={"pi": stats},
+            agent_displays={"pi": models.AgentDisplay(period, period, "1d")},
+        )
+
     def test_terminal_labels_cost_as_known_when_pricing_is_incomplete(self):
         usages = [self._usage("configured", 1.5, 100), self._usage("unknown", 0.0, 100)]
         stats = app.UsageAnalyzer.analyze_agent(
@@ -585,9 +596,7 @@ class CostCoverageTests(unittest.TestCase):
         )
         output = io.StringIO()
         with redirect_stdout(output):
-            app.print_single_agent_report(
-                "pi", usages, stats, date(2026, 8, 1), date(2026, 8, 1), "1d"
-            )
+            app.print_single_agent_report(self._terminal_report(stats), "pi")
 
         self.assertIn("KNOWN COST", output.getvalue())
         self.assertIn("Metered token coverage:", output.getvalue())
@@ -598,10 +607,7 @@ class CostCoverageTests(unittest.TestCase):
         )
         output = io.StringIO()
         with redirect_stdout(output):
-            app.print_single_agent_report(
-                "pi", [self._usage("recorded", 0.0, 0)], stats,
-                date(2026, 8, 1), date(2026, 8, 1), "1d"
-            )
+            app.print_single_agent_report(self._terminal_report(stats), "pi")
 
         self.assertIsNone(stats.priced_token_coverage)
         self.assertIn("Metered token coverage:", output.getvalue())
@@ -624,10 +630,7 @@ class CostCoverageTests(unittest.TestCase):
         )
         output = io.StringIO()
         with redirect_stdout(output):
-            app.print_single_agent_report(
-                "pi", [metered, subscription, unknown], stats,
-                date(2026, 8, 1), date(2026, 8, 1), "1d"
-            )
+            app.print_single_agent_report(self._terminal_report(stats), "pi")
 
         self.assertEqual(stats.metered_tokens, 200)
         self.assertEqual(stats.non_metered_tokens, {"subscription": 100})
@@ -649,6 +652,48 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.metered_tokens, 100)
         self.assertEqual(stats.unknown_cost_tokens, 0)
         self.assertEqual(stats.priced_token_coverage, 1.0)
+
+
+class DisplayPeriodTests(unittest.TestCase):
+    """Direct coverage for UsageAnalyzer.display_period (all-time branches)."""
+
+    @staticmethod
+    def _usage(timestamp):
+        return app.UsageEntry(
+            agent="pi", model_id="model", timestamp=timestamp,
+            input_tokens=1, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=1, cost=0.0,
+            cost_breakdown={}, provider="openai", cost_status="unknown",
+        )
+
+    def test_ranged_mode_returns_the_requested_period(self):
+        display = app.UsageAnalyzer.display_period(
+            [self._usage("2026-08-03T00:00:00Z")],
+            date(2026, 8, 1), date(2026, 8, 5), "5d", is_all_time=False,
+        )
+        self.assertEqual(
+            display, models.AgentDisplay(date(2026, 8, 1), date(2026, 8, 5), "5d")
+        )
+
+    def test_all_time_pins_to_first_usage_date(self):
+        display = app.UsageAnalyzer.display_period(
+            [self._usage("2026-08-03T00:00:00Z"), self._usage("2026-08-01T00:00:00Z")],
+            None, date(2026, 8, 31), "ALL TIME", is_all_time=True,
+        )
+        self.assertEqual(
+            display,
+            models.AgentDisplay(date(2026, 8, 1), date(2026, 8, 31),
+                                "ALL TIME (data from 2026-08-01)"),
+        )
+
+    def test_all_time_unparseable_timestamps_fall_back_to_end_date(self):
+        display = app.UsageAnalyzer.display_period(
+            [self._usage("not-a-date")],
+            None, date(2026, 8, 31), "ALL TIME", is_all_time=True,
+        )
+        self.assertEqual(
+            display, models.AgentDisplay(date(2026, 8, 31), date(2026, 8, 31), "ALL TIME")
+        )
 
 
 class PreferencesTests(unittest.TestCase):
@@ -890,6 +935,137 @@ class DateRangeTests(unittest.TestCase):
         self.assertIn("Excluded aggregate usage", terminal.getvalue())
 
 
+class Act3Phase1BaselineTests(unittest.TestCase):
+    """Pre-refactor baseline: locks the report shape Act III Phase 2 and 6 diff against."""
+
+    TOP_LEVEL_KEYS = [
+        "agent_stats", "agents_analyzed", "analysis_period", "preferences", "pricing",
+    ]
+    AGENT_STATS_KEYS = [
+        "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
+        "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
+        "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
+        "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
+        "pricing_fetched_at", "pricing_sources", "quarterly_cost",
+        "route_breakdown", "scope_warnings",
+        "sessions_count", "total_cache_read_tokens", "total_cache_write_tokens",
+        "total_cost", "total_input_tokens", "total_output_tokens", "total_tokens",
+        "unique_models", "unknown_cost_count", "unknown_cost_tokens", "usage_entries",
+        "weekly_cost", "yearly_cost",
+    ]
+    TERMINAL_SECTIONS = [
+        "TOTAL USAGE (ALL MODELS)", "BREAKDOWN BY MODEL",
+        "COST PROJECTIONS PER TIME PERIOD", "TOKEN VOLUME PER TIME PERIOD",
+        "MODEL ACTIVITY VOLUME PER TIME PERIOD", "DAILY ACTIVITY",
+        "SUMMARY STATISTICS", "CACHE EFFECTIVENESS", "COST ANALYSIS",
+    ]
+
+    EXPECTED_PI_STATS = {
+        "billing_mode_tokens": {"metered": 100},
+        "cache_efficiency_ratio": 0.75,
+        "cache_read_ratio": 30 / 70,
+        "cost_status_counts": {"recorded": 1},
+        "daily_activity": {"2026-08-01": {"cost": 1.25, "tokens": 100}},
+        "daily_cost": 1.25,
+        "known_cost": 1.25,
+        "metered_tokens": 100,
+        "model_breakdown": {"model": {
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
+        }},
+        "model_requests": 1,
+        "model_tool_calls": 0,
+        "model_turns": 1,
+        "monthly_cost": 37.5,
+        "non_metered_tokens": {},
+        "priced_token_coverage": 1.0,
+        "pricing_fetched_at": {},
+        "pricing_sources": ["recorded"],
+        "quarterly_cost": 112.5,
+        "route_breakdown": {"openai/model [metered]": {
+            "cost": 1.25, "entries": 1, "model_requests": 1,
+            "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
+        }},
+        "scope_warnings": [],
+        "sessions_count": 1,
+        "total_cache_read_tokens": 30,
+        "total_cache_write_tokens": 40,
+        "total_cost": 1.25,
+        "total_input_tokens": 10,
+        "total_output_tokens": 20,
+        "total_tokens": 100,
+        "unique_models": ["model"],
+        "unknown_cost_count": 0,
+        "unknown_cost_tokens": 0,
+        "usage_entries": 1,
+        "weekly_cost": 8.75,
+        "yearly_cost": 456.25,
+    }
+
+    def _run(self):
+        usage = app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            input_tokens=10, output_tokens=20, cache_read_tokens=30,
+            cache_write_tokens=40, total_tokens=100, cost=1.25,
+            cost_breakdown={"total": 1.25}, provider="openai",
+            observed_provider="openai", cost_status="recorded", session_id="s1",
+            project_id="/repo/a", model_requests=1, model_turns=1,
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_path = root / "report.json"
+            terminal = io.StringIO()
+            # Hermetic pricing/preferences: no repo config leaks into the baseline.
+            pricing = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            prefs = app.PreferencesResolver(root / "missing-prefs.jsonc")
+            argv = [
+                "eurysx", "--agent", "pi",
+                "--from", "2026-08-01", "--to", "2026-08-01",
+                "--output", str(output_path),
+            ]
+            sources = lambda agent, home=None: [
+                Source("pi:fake", "fingerprint-1", "1", lambda: [usage])
+            ]
+            with (
+                patch("sys.argv", argv),
+                patch.object(app, "collect_sources", side_effect=sources),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+                patch.object(app, "PricingResolver", return_value=pricing),
+                patch.object(app, "PreferencesResolver", return_value=prefs),
+                redirect_stdout(terminal),
+            ):
+                app.main()
+            return json.loads(output_path.read_text()), terminal.getvalue()
+
+    def test_json_output_shape_is_the_locked_baseline(self):
+        report, _ = self._run()
+        self.assertEqual(sorted(report), self.TOP_LEVEL_KEYS)
+        stats = report["agent_stats"]["pi"]
+        self.assertEqual(sorted(stats), self.AGENT_STATS_KEYS)
+
+    def test_json_values_are_the_locked_baseline(self):
+        report, _ = self._run()
+        self.assertEqual(report["agents_analyzed"], ["pi"])
+        self.assertEqual(report["analysis_period"], {
+            "start": "2026-08-01", "end": "2026-08-01",
+            "label": "2026-08-01 to 2026-08-01",
+        })
+        self.assertEqual(report["agent_stats"]["pi"], self.EXPECTED_PI_STATS)
+
+    def test_cache_ratios_are_present_in_json_and_match_the_terminal(self):
+        report, terminal = self._run()
+        stats = report["agent_stats"]["pi"]
+        self.assertAlmostEqual(stats["cache_read_ratio"], 30 / 70)
+        self.assertEqual(stats["cache_efficiency_ratio"], 0.75)
+        self.assertIn("Cache read ratio: 42.9%", terminal)
+        self.assertIn("Cache efficiency ratio: 0.8:1", terminal)
+
+    def test_terminal_report_key_sections_present(self):
+        _, terminal = self._run()
+        for section in self.TERMINAL_SECTIONS:
+            self.assertIn(section, terminal)
+
+
 class PricingPathTests(unittest.TestCase):
     def test_defaults_use_the_current_eurysx_working_directory(self):
         root = Path("/workspace/eurysx")
@@ -932,11 +1108,15 @@ class PricingPathTests(unittest.TestCase):
 
 class SummaryOutputTests(unittest.TestCase):
     def test_comparison_labels_cost_as_known(self):
-        stats = app.AgentStats(agent="pi", usage_entries=1, total_tokens=100,
+        stats = models.AgentStats(agent="pi", usage_entries=1, total_tokens=100,
                                total_cost=1.5, known_cost=1.5)
+        report = app.AnalysisReport(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 1), period_label="1d",
+            agent_stats={"pi": stats},
+        )
         output = io.StringIO()
         with redirect_stdout(output):
-            app.print_summary_comparison({"pi": stats})
+            app.print_summary_comparison(report)
 
         self.assertIn("Known Cost", output.getvalue())
 
@@ -950,7 +1130,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.3")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.4")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:

@@ -1,7 +1,8 @@
 """Usage data models for Eurysx."""
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any, Dict, List, Optional, Set
 
 
 @dataclass
@@ -70,6 +71,8 @@ class AgentStats:
     unknown_cost_count: int = 0
     unknown_cost_tokens: int = 0
     priced_token_coverage: Optional[float] = None
+    cache_read_ratio: Optional[float] = None
+    cache_efficiency_ratio: Optional[float] = None
     metered_tokens: int = 0
     non_metered_tokens: Dict[str, int] = None
     billing_mode_tokens: Dict[str, int] = None
@@ -102,4 +105,21 @@ class AgentStats:
             self.scope_warnings = []
 
 
+@dataclass
+class AgentDisplay:
+    """Per-agent period shown in the terminal report (all-time mode pins it to first usage)."""
+    start_date: Optional[date]
+    end_date: date
+    label: str
 
+
+@dataclass
+class AnalysisReport:
+    """Structured analysis result consumed by every presenter (terminal, JSON, ...)."""
+    start_date: Optional[date]
+    end_date: date
+    period_label: str
+    agent_stats: Dict[str, AgentStats] = field(default_factory=dict)
+    agent_displays: Dict[str, AgentDisplay] = field(default_factory=dict)
+    pricing: Dict[str, Any] = field(default_factory=dict)
+    preferences: Dict[str, Any] = field(default_factory=dict)
