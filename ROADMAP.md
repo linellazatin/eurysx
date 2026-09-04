@@ -103,28 +103,62 @@ Make analysis incremental, reproducible, and privacy-preserving.
 
 ### Phase 3: Incremental sources
 
-- [ ] Move collection to source-level adapters with fingerprints, cursors, and
-  transactional source replacement.
-- [ ] Skip unchanged raw sources safely and retain usable history when one source
+- ~~[ ] Move collection to source-level adapters with fingerprints, cursors, and transactional source replacement.~~
+- [x] Skip unchanged raw sources safely and retain usable history when one source
   fails to refresh.
-- [ ] Record source parser versions and refresh failures with each source.
+- [x] Record source parser versions and refresh failures with each source.
 
 ### Phase 4: Attribution and diagnostics
 
-- [ ] Add best-effort project attribution and persisted collector diagnostics.
+- [x] Add best-effort project attribution and persisted collector diagnostics.
 
 ## Act III: Clarity
 
 Make Eurysx useful for decisions and automation.
 
-- [ ] Return structured analysis results before terminal rendering.
-- [ ] Add stable JSON, CSV, and Markdown export contracts.
-- [ ] Add explicit date ranges, calendar periods, agent/model/provider filters,
-  grouping, and comparisons.
-- [ ] Report known cost, unknown-cost coverage, cache ratios, request/turn/tool
-  ratios, and project/session costs where available.
-- [ ] Add `doctor` diagnostics for detected harnesses, pricing state, and
-  collector compatibility.
+### Phase 1: Result seams
+
+- [ ] Formalize one structured analysis result (period, per-agent stats, cost
+  coverage, pricing provenance, warnings) that analysis produces before any
+  presentation; terminal renderers consume it unchanged.
+- [ ] Move JSON payload assembly out of the CLI so the CLI only invokes
+  collection, analysis, and a presenter.
+- [ ] Land this as a pure refactor: terminal and JSON output unchanged.
+
+### Phase 2: Query surface
+
+- [ ] Extend store reads with model, provider, and billing-mode filters; add
+  the matching CLI selectors alongside `--agent`.
+- [ ] Add grouping dimensions to the analysis result: model, provider, project,
+  session, and day, where the stored metadata supports them.
+- [ ] Add explicit period-to-period comparisons computed from the same store
+  query path.
+
+### Phase 3: Richer metrics
+
+- [ ] Report cache ratios and request/turn/tool ratios alongside token totals.
+- [ ] Report project and session usage and cost where `project_id` or
+  `session_id` is attributed.
+- [ ] Flag metrics that include last-good data from sources whose most recent
+  refresh failed.
+
+### Phase 4: Doctor diagnostics
+
+- [ ] Add `eurysx doctor`: detected harnesses, per-source state (collected at,
+  parser version, fingerprint changes, last error), pricing source and cache
+  freshness, and configuration validation.
+- [ ] Reuse the persisted diagnostics and existing resolver and preference
+  warnings; introduce no new state.
+
+### Phase 5: Stable exports
+
+- [ ] Version the JSON report contract and document it as stable; the current
+  shape is explicitly unstable history.
+- [ ] Add CSV and Markdown presenters rendered from the same analysis result.
+- [ ] Pin every export contract with tests.
+
+### Phase 6: Pacing and insights
+
 - [ ] Add deterministic budget pacing and insights only when their inputs are
   present and trustworthy.
 

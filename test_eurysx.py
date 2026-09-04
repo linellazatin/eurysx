@@ -1,10 +1,11 @@
 import json
 import io
+import os
 import sqlite3
 import tempfile
 import tomllib
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ import eurysx.pricing
 import eurysx.render
 from eurysx.collectors import claude_code, codex, opencode
 from eurysx.collectors import pi as pi_collector
+from eurysx.collectors.sources import Source, fingerprint_paths
 from eurysx.store import UsageStore
 
 
@@ -93,6 +95,7 @@ class CollectorFixtureTests(unittest.TestCase):
             (10, 20, 30, 40, 100),
         )
         self.assertEqual(usage.session_id, "codex-session-1")
+        self.assertEqual(usage.project_id, "/repo/project-a")
         self.assertEqual(sum(item.model_requests for item in usages), 1)
         self.assertEqual(sum(item.model_turns for item in usages), 1)
         self.assertEqual(sum(item.model_tool_calls for item in usages), 1)
@@ -113,6 +116,7 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertEqual(usage.provider, "openai")
         self.assertEqual(usage.timestamp, "2026-08-01T13:00:00Z")
         self.assertEqual(usage.session_id, "pi-session-1")
+        self.assertEqual(usage.project_id, "/repo/project-a")
         self.assertEqual(
             (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
              usage.cache_write_tokens, usage.total_tokens),
@@ -137,6 +141,7 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertEqual(usage.provider, "openai")
         self.assertEqual(usage.timestamp, "1754056800000")
         self.assertEqual(usage.session_id, "opencode-session-1")
+        self.assertEqual(usage.project_id, "/repo/project-a")
         self.assertEqual(
             (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
              usage.cache_write_tokens, usage.total_tokens),
@@ -236,7 +241,7 @@ class UsageStoreTests(unittest.TestCase):
             output = root / "report.json"
             with patch("sys.argv", ["eurysx", "report", "--agent", "codex", "--output", str(output)]), \
                     patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
-                    patch.object(app, "collect", side_effect=AssertionError), \
+                    patch.object(app, "collect_sources", side_effect=AssertionError), \
                     redirect_stdout(io.StringIO()):
                 app.main()
             report = json.loads(output.read_text())
@@ -257,6 +262,98 @@ class UsageStoreTests(unittest.TestCase):
             events = store.events(["pi"])
 
         self.assertEqual(len(events), 1)
+
+
+class IncrementalCollectionTests(unittest.TestCase):
+    def _entry(self):
+        return app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-09-01T00:00:00Z",
+            input_tokens=1, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=1, cost=0.0,
+            cost_breakdown={}, session_id="session-1", project_id="/repo/project-a",
+        )
+
+    def _collect(self, root, store, sources):
+        with patch.object(app, "UsageStore", return_value=store), \
+                patch.object(app, "collect_sources", side_effect=lambda agent, home=None: sources), \
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
+                redirect_stdout(io.StringIO()):
+            app.main(["collect", "--agent", "pi"])
+
+    def test_unchanged_source_skips_reparse_until_fingerprint_or_parser_version_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            calls = []
+
+            def parse():
+                calls.append(1)
+                return [self._entry()]
+
+            self._collect(root, store, [Source("pi:one", "fp-a", "1", parse)])
+            self._collect(root, store, [Source("pi:one", "fp-a", "1", parse)])
+            self.assertEqual(len(calls), 1)
+            self._collect(root, store, [Source("pi:one", "fp-b", "1", parse)])
+            self.assertEqual(len(calls), 2)
+            self._collect(root, store, [Source("pi:one", "fp-b", "2", parse)])
+            self.assertEqual(len(calls), 3)
+            events = store.events(["pi"])
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project_id"], "/repo/project-a")
+
+    def _report(self, root, store):
+        errors = io.StringIO()
+        with patch.object(app, "UsageStore", return_value=store), \
+                patch.object(app, "collect_sources", side_effect=AssertionError), \
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
+                redirect_stdout(io.StringIO()), redirect_stderr(errors):
+            app.main(["report", "--agent", "pi"])
+        return errors.getvalue()
+
+    def test_failed_refresh_keeps_prior_events_and_records_the_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            store.replace_source("pi:one", "pi", "fp-a", [self._entry()])
+
+            def boom():
+                raise OSError("source vanished")
+
+            self._collect(root, store, [Source("pi:one", "fp-b", "1", boom)])
+            events = store.events(["pi"])
+            state = store.source_state("pi:one")
+            warning = self._report(root, store)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(state["fingerprint"], "fp-a")
+        self.assertIn("source vanished", state["last_error"])
+        self.assertIn("last refresh failed for pi:one", warning)
+
+    def test_fingerprint_is_stable_and_tracks_file_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.jsonl"
+            path.write_text("{}\n")
+            digest = fingerprint_paths([path])
+            self.assertEqual(digest, fingerprint_paths([path]))
+            os.utime(path, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+            self.assertNotEqual(digest, fingerprint_paths([path]))
+            self.assertNotEqual(digest, fingerprint_paths([path.parent / "absent.jsonl"]))
+
+    def test_pi_collector_enumerates_one_source_per_session_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session_dir = root / ".pi" / "agent" / "sessions" / "project"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.jsonl").write_text(
+                (FIXTURES / "pi" / "session.jsonl").read_text()
+            )
+            sources = pi_collector.enumerate_sources(root)
+            usages = [entry for source in sources for entry in source.parse()]
+
+        self.assertEqual(len(sources), 1)
+        self.assertTrue(sources[0].key.startswith("pi:"))
+        self.assertEqual(len(usages), 2)
 
 
 class PricingTests(unittest.TestCase):
@@ -723,12 +820,15 @@ class DateRangeTests(unittest.TestCase):
                 cost_breakdown={"total": 1.0}, cost_status="recorded",
             )]
 
+        def fake_sources(agent, home=None):
+            return [Source(f"{agent}:fake", "fingerprint-1", "1", lambda: entries(agent))]
+
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
             patches = (
                 patch.object(app, "detect_agents", return_value=list(agents)),
-                patch.object(app, "collect", side_effect=entries),
+                patch.object(app, "collect_sources", side_effect=fake_sources),
                 patch.object(app, "PricingResolver", return_value=resolver),
                 patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
             )
@@ -772,7 +872,8 @@ class DateRangeTests(unittest.TestCase):
             terminal = io.StringIO()
             with patch("sys.argv", [
                 "eurysx", "--agent", "claude-code", "--days", "3", "--output", str(output_path),
-            ]), patch.object(app, "collect", return_value=[aggregate]), \
+            ]), patch.object(app, "collect_sources", side_effect=lambda agent, home=None: [
+                    Source("claude-code:fake", "fingerprint-1", "1", lambda: [aggregate])]), \
                     patch.object(app, "get_eurysx_data_dir", return_value=Path(temp) / "data"), \
                     redirect_stdout(terminal):
                 app.main()
@@ -849,7 +950,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.2")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.3")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:

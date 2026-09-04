@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.0.2 is in development. It is a local CLI, not a hosted service.
+> Eurysx v0.0.3 is in development. It is a local CLI, not a hosted service.
 
 ## Install
 
