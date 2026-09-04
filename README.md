@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.0.3 is in development. It is a local CLI, not a hosted service.
+> Eurysx v0.0.4 is in development. It is a local CLI, not a hosted service.
 
 ## Install
 
@@ -39,6 +39,17 @@ the store is `data/eurysx.db` relative to the current project directory. Set
 Period selectors are mutually exclusive: `--days N`, `--weeks N`,
 `--from YYYY-MM-DD [--to YYYY-MM-DD]`, `--month YYYY-MM`,
 `--quarter YYYY-QN`, `--year YYYY`, and `--ytd`. Rolling periods include today.
+
+## Documentation
+
+Command and output references live in `docs/` and are updated on every
+phase/act completion alongside this file and the changelog:
+
+- [docs/cli.md](docs/cli.md) — full command, flag, and period-selector reference
+- [docs/output.md](docs/output.md) — what a report contains: terminal sections
+  and the JSON `--output` field contract
+
+This manual is the authoritative contract for the JSONC configuration files.
 
 ## Configuration manual
 

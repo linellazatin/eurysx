@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.4] - Report baseline + result seams
+
+### Added
+
+- Tests lock JSON `--output` schema and terminal report key sections against a hermetic fixture to assert exact values.
+- Added cache read and cache efficiency ratios to JSON exports (previously terminal-only).
+- `AnalysisReport` encapsulates period, per-agent stats/display periods, and pricing/preferences provenance; moved JSON assembly from CLI to `render.py`.
+- `UsageAnalyzer.display_period` unit tests for ranged and all-time period derivations.
+
+### Changed
+
+- Terminal report, comparison summary, and JSON export now consume `AnalysisReport` instead of CLI-assembled payloads.
+- Internal test-only models moved out of CLI exports; tests now import `eurysx.models` directly.
+
 ## [0.0.3] - Incremental collection + attribution and diagnostics
 
 ### Added
