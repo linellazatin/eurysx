@@ -140,7 +140,7 @@ class CollectorFixtureTests(unittest.TestCase):
         usage = next(item for item in usages if not item.is_metric_only)
         self.assertEqual(usage.model_id, "gpt-5.6")
         self.assertEqual(usage.provider, "openai")
-        self.assertEqual(usage.timestamp, "1754056800000")
+        self.assertEqual(usage.timestamp, "2025-08-01T14:00:00+00:00")
         self.assertEqual(usage.session_id, "opencode-session-1")
         self.assertEqual(usage.project_id, "/repo/project-a")
         self.assertEqual(
