@@ -284,6 +284,89 @@ class UsageStoreTests(unittest.TestCase):
             self.assertTrue(store.has_aggregate_events())
             self.assertTrue(store.has_aggregate_events(["claude-code"]))
             self.assertFalse(store.has_aggregate_events(["pi"]))
+            self.assertEqual(store.distinct_agents(), ["claude-code", "pi"])
+
+    def test_sql_range_filter_matches_python_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            pi_rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=10, output_tokens=20, cache_read_tokens=30,
+                    cache_write_tokens=40, total_tokens=100, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-03T23:59:59Z",
+                    input_tokens=1, output_tokens=1, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=2, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-04T00:00:00Z",
+                    input_tokens=1, output_tokens=1, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=2, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+            ]
+            aggregate = app.UsageEntry(
+                agent="claude-code", model_id="claude-sonnet-4",
+                timestamp="2026-08-01T00:00:00Z", input_tokens=1, output_tokens=0,
+                cache_read_tokens=0, cache_write_tokens=0, total_tokens=1,
+                cost=0.0, cost_breakdown={}, is_aggregated=True,
+            )
+            codex_rows = [
+                app.UsageEntry(
+                    agent="codex", model_id="model", timestamp="not-a-date",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                ),
+                app.UsageEntry(
+                    agent="codex", model_id="model", timestamp="2026-07-31T23:59:59Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                ),
+            ]
+            store.replace_source("pi:one", "pi", "fp", pi_rows)
+            store.replace_source("claude-code:one", "claude-code", "fp", [aggregate])
+            store.replace_source("codex:one", "codex", "fp", codex_rows)
+
+            agents = ["pi", "claude-code", "codex"]
+            start, end = date(2026, 8, 1), date(2026, 8, 3)
+
+            ids = lambda records: sorted(
+                (r["agent"], r["timestamp"]) for r in records
+            )
+            entry_ids = lambda entries: sorted(
+                (entry.agent, entry.timestamp) for entry in entries
+            )
+            sql = ids(store.events(agents, start, end))
+            python_reference = entry_ids(app.UsageAnalyzer.filter_by_date_range(
+                [app._usage_from_store(r) for r in store.events(agents)],
+                start, end, include_aggregated=False,
+            ))
+            self.assertEqual(sql, python_reference)
+            self.assertTrue(sql)  # non-vacuous: at least the in-range pi rows
+            self.assertNotIn(("claude-code", "2026-08-01T00:00:00Z"), sql)
+
+            # All-time path keeps every row including aggregates and garbage.
+            all_time = ids(store.events(agents))
+            self.assertEqual(
+                all_time,
+                entry_ids(app.UsageAnalyzer.filter_by_date_range(
+                    [app._usage_from_store(r) for r in store.events(agents)],
+                    None, end, include_aggregated=True,
+                )),
+            )
+            self.assertEqual(len(all_time), 6)
+
+            # Single-agent filtering routes through the same WHERE clause.
+            self.assertEqual(
+                ids(store.events(["pi"], start, end)),
+                [record for record in sql if record[0] == "pi"],
+            )
 
 
 class IncrementalCollectionTests(unittest.TestCase):

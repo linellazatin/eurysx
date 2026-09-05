@@ -2,7 +2,7 @@
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -152,13 +152,28 @@ class UsageStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def events(self, agents=None):
+    def events(self, agents=None, start_date=None, end_date=None):
+        """Filtered events; range mode mirrors filter_by_date_range semantics.
+
+        Rows outside any ISO filter on date-only rows are unreachable: the
+        claude-code stats-cache rows are the only date-only rows and they are
+        aggregate_usage, excluded by the event_type guard in range mode.
+        """
         agents = list(agents or [])
-        query = "SELECT * FROM events"
-        parameters = []
+        conditions, parameters = [], []
         if agents:
-            query += " WHERE agent IN (" + ", ".join("?" for _ in agents) + ")"
+            conditions.append("agent IN (" + ", ".join("?" for _ in agents) + ")")
             parameters.extend(agents)
+        if start_date is not None:
+            conditions.append("event_type != 'aggregate_usage'")
+            conditions.append("timestamp >= ? AND timestamp < ?")
+            parameters.extend([
+                start_date.isoformat(),
+                (end_date + timedelta(days=1)).isoformat(),
+            ])
+        query = "SELECT * FROM events"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY timestamp, source_key, ordinal"
         with self._connection() as connection:
             return [dict(row) for row in connection.execute(query, parameters)]
@@ -174,6 +189,18 @@ class UsageStore:
         query += " LIMIT 1"
         with self._connection() as connection:
             return connection.execute(query, parameters).fetchone() is not None
+
+    def distinct_agents(self, agents=None):
+        """Distinct agents present in the store, for the ranged report shape."""
+        agents = list(agents or [])
+        query = "SELECT DISTINCT agent FROM events"
+        parameters = []
+        if agents:
+            query += " WHERE agent IN (" + ", ".join("?" for _ in agents) + ")"
+            parameters.extend(agents)
+        with self._connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return sorted(row["agent"] for row in rows)
 
     def source_state(self, source_key):
         with self._connection() as connection:

@@ -254,11 +254,22 @@ def main(argv=None):
             f"reporting last good data ({failure['last_error']}).",
             file=sys.stderr,
         )
-    for record in store.events(read_agents):
+    store_agents = store.distinct_agents(read_agents)
+    for record in store.events(read_agents, start_date, end_date):
         usage = _usage_from_store(record)
         agent_data.setdefault(usage.agent, []).append(usage)
     if agents_to_analyze:
         agent_data = {a: agent_data[a] for a in agents_to_analyze if a in agent_data}
+    # Agents present in the store keep their report block even when no row falls
+    # inside the period (pre-pushdown these empty blocks came from unfiltered
+    # reads); this also keeps aggregate-only agents (claude-code) visible.
+    if agents_to_analyze:
+        for agent in agents_to_analyze:
+            if agent in store_agents:
+                agent_data.setdefault(agent, [])
+    else:
+        for agent in store_agents:
+            agent_data.setdefault(agent, [])
     if not agent_data:
         print("No stored usage data found. Run eurysx collect first.")
         return
