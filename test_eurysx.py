@@ -368,6 +368,71 @@ class UsageStoreTests(unittest.TestCase):
                 [record for record in sql if record[0] == "pi"],
             )
 
+    def test_grouping_dimensions_are_queryable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T10:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s1", project_id="p1",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s2", project_id="p1",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-02T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s3",
+                ),
+            ]
+            store.replace_source("pi:one", "pi", "fp", rows)
+            with sqlite3.connect(store.path) as connection:
+                project_buckets = dict(connection.execute(
+                    "SELECT project_id, COUNT(*) FROM events GROUP BY project_id"
+                ))
+                session_buckets = dict(connection.execute(
+                    "SELECT session_id, COUNT(*) FROM events GROUP BY session_id"
+                ))
+                day_buckets = dict(connection.execute(
+                    "SELECT substr(timestamp, 1, 10), COUNT(*) FROM events"
+                    " GROUP BY substr(timestamp, 1, 10)"
+                ))
+
+        self.assertEqual(project_buckets, {"p1": 2, None: 1})
+        self.assertEqual(session_buckets, {"s1": 1, "s2": 1, "s3": 1})
+        self.assertEqual(day_buckets, {"2026-08-01": 2, "2026-08-02": 1})
+
+    def test_two_periods_from_one_query_path_are_disjoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp=f"2026-{month:02d}-15T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                )
+                for month in (7, 8, 9)
+            ]
+            store.replace_source("pi:one", "pi", "fp", rows)
+            july = store.events(["pi"], date(2026, 7, 1), date(2026, 7, 31))
+            august = store.events(["pi"], date(2026, 8, 1), date(2026, 8, 31))
+            all_months = store.events(["pi"])
+
+        self.assertTrue(july)
+        self.assertTrue(august)
+        self.assertEqual(len(july) + len(august), len(all_months) - 1)
+        self.assertEqual(
+            {r["timestamp"] for r in july} & {r["timestamp"] for r in august},
+            set(),
+        )
+
     def test_events_dimension_indices_exist(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "data" / "eurysx.db"
