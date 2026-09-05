@@ -64,13 +64,14 @@ class UsageAnalyzer:
     @staticmethod
     def analyze_agent(agent: str, usages: List[UsageEntry], start_date: Optional[date],
                      end_date: date, period_label: str,
-                     include_aggregated: bool = True) -> AgentStats:
+                     include_aggregated: bool = True,
+                     aggregates_present: bool = False) -> AgentStats:
         """Analyze usage data for a single agent."""
         filtered_usages = UsageAnalyzer.filter_by_date_range(
             usages, start_date, end_date, include_aggregated
         )
         stats = AgentStats(agent=agent)
-        if not include_aggregated and any(usage.is_aggregated for usage in usages):
+        if not include_aggregated and aggregates_present:
             stats.scope_warnings.append(
                 "Excluded aggregate usage because it cannot be filtered to the selected period."
             )

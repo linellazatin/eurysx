@@ -163,6 +163,18 @@ class UsageStore:
         with self._connection() as connection:
             return [dict(row) for row in connection.execute(query, parameters)]
 
+    def has_aggregate_events(self, agents=None):
+        """Cheap presence check for aggregate rows (claude-code stats cache)."""
+        agents = list(agents or [])
+        query = "SELECT 1 FROM events WHERE event_type = 'aggregate_usage'"
+        parameters = []
+        if agents:
+            query += " AND agent IN (" + ", ".join("?" for _ in agents) + ")"
+            parameters.extend(agents)
+        query += " LIMIT 1"
+        with self._connection() as connection:
+            return connection.execute(query, parameters).fetchone() is not None
+
     def source_state(self, source_key):
         with self._connection() as connection:
             row = connection.execute(

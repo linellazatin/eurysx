@@ -264,6 +264,27 @@ class UsageStoreTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
 
+    def test_has_aggregate_events_presence_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            aggregate = app.UsageEntry(
+                agent="claude-code", model_id="claude-sonnet-4",
+                timestamp="2026-08-01T00:00:00Z", input_tokens=1, output_tokens=0,
+                cache_read_tokens=0, cache_write_tokens=0, total_tokens=1,
+                cost=0.0, cost_breakdown={}, is_aggregated=True,
+            )
+            usage = app.UsageEntry(
+                agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=1, cost=0.0, cost_breakdown={},
+            )
+            store.replace_source("claude-code:one", "claude-code", "fp", [aggregate])
+            store.replace_source("pi:one", "pi", "fp", [usage])
+
+            self.assertTrue(store.has_aggregate_events())
+            self.assertTrue(store.has_aggregate_events(["claude-code"]))
+            self.assertFalse(store.has_aggregate_events(["pi"]))
+
 
 class IncrementalCollectionTests(unittest.TestCase):
     def _entry(self):
@@ -899,11 +920,24 @@ class DateRangeTests(unittest.TestCase):
         )
         stats = app.UsageAnalyzer.analyze_agent(
             "claude-code", [aggregate], date(2026, 8, 1), date(2026, 8, 3), "3d",
-            include_aggregated=False,
+            include_aggregated=False, aggregates_present=True,
         )
 
         self.assertEqual(stats.usage_entries, 0)
         self.assertTrue(stats.scope_warnings)
+
+    def test_aggregate_warning_absent_without_aggregates_present(self):
+        usage = app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            input_tokens=1, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=1, cost=0.0, cost_breakdown={},
+        )
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d",
+            include_aggregated=False, aggregates_present=False,
+        )
+
+        self.assertEqual(stats.scope_warnings, [])
 
     def test_json_report_excludes_claude_aggregate_for_selected_range(self):
         aggregate = app.UsageEntry(

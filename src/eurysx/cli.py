@@ -283,6 +283,7 @@ def main(argv=None):
         stats = UsageAnalyzer.analyze_agent(
             agent, usages, start_date, end_date, period_label,
             include_aggregated=is_all_time,
+            aggregates_present=not is_all_time and store.has_aggregate_events([agent]),
         )
         report.agent_stats[agent] = stats
         report.agent_displays[agent] = UsageAnalyzer.display_period(
