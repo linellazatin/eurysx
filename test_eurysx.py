@@ -770,6 +770,37 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.unknown_cost_tokens, 0)
         self.assertEqual(stats.priced_token_coverage, 1.0)
 
+    def test_billing_mode_filter_keeps_only_selected_modes(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        subscription = self._usage("recorded", 1.0, 50)
+        subscription.billing_mode = "subscription"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, subscription],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+            billing_modes={"subscription"},
+        )
+
+        self.assertEqual(stats.usage_entries, 1)
+        self.assertEqual(stats.total_tokens, 50)
+        self.assertEqual(stats.metered_tokens, 0)
+        self.assertEqual(stats.non_metered_tokens, {"subscription": 50})
+
+    def test_billing_mode_filter_default_keeps_all_modes(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        subscription = self._usage("recorded", 1.0, 50)
+        subscription.billing_mode = "subscription"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, subscription],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        self.assertEqual(stats.usage_entries, 2)
+        self.assertEqual(stats.total_tokens, 150)
+
 
 class DisplayPeriodTests(unittest.TestCase):
     """Direct coverage for UsageAnalyzer.display_period (all-time branches)."""

@@ -65,7 +65,8 @@ class UsageAnalyzer:
     def analyze_agent(agent: str, usages: List[UsageEntry], start_date: Optional[date],
                      end_date: date, period_label: str,
                      include_aggregated: bool = True,
-                     aggregates_present: bool = False) -> AgentStats:
+                     aggregates_present: bool = False,
+                     billing_modes=None) -> AgentStats:
         """Analyze usage data for a single agent."""
         filtered_usages = UsageAnalyzer.filter_by_date_range(
             usages, start_date, end_date, include_aggregated
@@ -90,6 +91,8 @@ class UsageAnalyzer:
         sessions = set()
         
         for usage in filtered_usages:
+            if billing_modes is not None and usage.billing_mode not in billing_modes:
+                continue
             billing_mode = usage.billing_mode
             route_key = f"{usage.provider or 'unknown'}/{usage.model_id} [{billing_mode}]"
             route_data = route_tokens[route_key]
