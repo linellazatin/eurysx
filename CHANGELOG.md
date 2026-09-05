@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] - Act III gap foundations (G1-G8)
+
+### Changed
+
+- OpenCode timestamps are now stored as ISO-8601 text (parser version 3); epoch-millis rows re-collect on the next opencode refresh.
+- Claude Code aggregate scope warning is driven by a store presence check instead of the unfiltered event list, so it survives SQL filtering.
+- `store.events()` now filters agents, dates, and aggregate exclusion in SQL; the Python date filter remains as the equivalence reference.
+- Added provider, model, project, and session indices on the events table (additive, idempotent).
+- `UsageAnalyzer.analyze_agent` gained post-pricing billing-mode filtering (`billing_modes`); no CLI flag yet.
+
+### Tests
+
+- SQL-vs-Python equivalence test for ranged `store.events()`.
+- Store presence-check, index existence, grouping-dimension, and two-period-reuse tests.
+
 ## [0.0.4] - Report baseline + result seams
 
 ### Added
