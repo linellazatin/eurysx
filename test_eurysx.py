@@ -368,6 +368,19 @@ class UsageStoreTests(unittest.TestCase):
                 [record for record in sql if record[0] == "pi"],
             )
 
+    def test_events_dimension_indices_exist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "data" / "eurysx.db"
+            UsageStore(path)
+            connection = sqlite3.connect(path)
+            names = {row[1] for row in connection.execute("PRAGMA index_list(events)")}
+            connection.close()
+            UsageStore(path)  # idempotent reopen on the same store
+        self.assertTrue({
+            "events_provider", "events_model_id",
+            "events_project_id", "events_session_id",
+        }.issubset(names))
+
 
 class IncrementalCollectionTests(unittest.TestCase):
     def _entry(self):

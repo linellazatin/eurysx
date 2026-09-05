@@ -84,6 +84,10 @@ class UsageStore:
                 );
                 CREATE INDEX IF NOT EXISTS events_agent_timestamp
                     ON events(agent, timestamp);
+                CREATE INDEX IF NOT EXISTS events_provider ON events(provider);
+                CREATE INDEX IF NOT EXISTS events_model_id ON events(model_id);
+                CREATE INDEX IF NOT EXISTS events_project_id ON events(project_id);
+                CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id);
             """)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             # Idempotent purge of Phase 2 per-agent bulk rows (source_key 'collector:<agent>').
