@@ -119,6 +119,11 @@ verified, updates README, CHANGELOG, and the `docs/` reference files, and is re-
 codebase before the next phase starts — no phase begins on assumption.
 Version bumps land on request (git operations stay user-owned).
 
+Documentation ownership: README stays the concise product and technical
+overview. `docs/manual.md` (Phase 8) becomes the operational source of truth for
+developers and agents; `docs/cli.md` and `docs/output.md` are today's reference
+pages and are folded into it when that phase lands.
+
 ### Phase 1: Settle inherited gaps
 
 - [x] Snapshot today's JSON `--output` shape and the terminal report's key
@@ -188,14 +193,49 @@ Version bumps land on request (git operations stay user-owned).
   with tests; all-time runs omit the comparison because no previous window
   exists.
 
-### Phase 4: Richer metrics
+### Phase 4: Richer metrics (closed — shipped in v0.0.6)
 
-- [ ] Add request/turn/tool ratios alongside the cache ratios Phase 1 already
-  relocated into `AgentStats`.
-- [ ] Report project and session usage and cost where `project_id` or
-  `session_id` is attributed.
-- [ ] Flag metrics that include last-good data from sources whose most recent
-  refresh failed.
+- [x] Add request/turn/tool ratios alongside the cache ratios Phase 1 already
+  relocated into `AgentStats`: `requests_per_turn`, `tool_calls_per_request`,
+  `tool_calls_per_turn`. Counts live on different row kinds per harness
+  (Pi/Codex/OpenCode carry requests, turns, and tool calls on metric rows;
+  Claude Code only on its aggregate), so totals already sum across both, but a
+  ranged Claude Code report has no request/turn/tool rows at all: ratios are
+  `null`/`N/A`, never zero or infinity.
+- [x] ~~Report project and session usage and cost where `project_id` or
+  `session_id` is attributed.~~ Delivered by Phase 3C as
+  `project_breakdown`/`session_breakdown` (tokens, cost, and activity counts per
+  bucket, terminal and JSON); nothing left to build here.
+- ~~[ ] Flag metrics that include last-good data from sources whose most recent
+  refresh failed. Deferred to Phase 5: `UsageEntry` carries no `source_key`,
+  `store.failing_sources()` is not agent-scoped, and `source_key` embeds
+  absolute paths, so the flag must be a count or boolean per agent. Phase 5
+  already owns diagnostics and must not add state, so both land together.~~
+
+#### v0.0.6 checkpoint fixes (pre-phase reassessment, shipped)
+
+- [x] Parse date-only (`YYYY-MM-DD`) timestamps in
+  `UsageAnalyzer.extract_date_from_timestamp`. Claude Code's stats cache stamps
+  rows with `lastComputedDate` only, so all-time Claude Code reports showed an
+  unpinned one-day period, `$0.00` cost rates next to a non-zero known cost,
+  and an empty `DAILY ACTIVITY` table.
+- [x] Keep aggregate rows out of `daily_activity` (they summarize all history
+  on one stamp; a per-day bucket would be a false spike) and render the
+  per-active-day projection lines as `n/a` when no per-day rows exist, instead
+  of repeating the across-all-days figure under an active-days label.
+- [x] Label the terminal session count as attributed when unattributed rows
+  exist, so `Total sessions: 0` no longer contradicts the `unknown` bucket in
+  `BREAKDOWN BY SESSION`.
+- [x] Warn (stderr, read-only) about stored sources still on an older parser
+  version than the current collector, and about stored sources whose files no
+  longer exist on disk. `eurysx report` never re-normalizes stored rows, so a
+  bounded report can otherwise read narrower than the store holds; deletion
+  stays out of scope because an absent harness directory would destroy history.
+- [x] Fix Pi session attribution (parser v3): live Pi files carry the session id
+  only on the `type: "session"` header, so every stored Pi row had a null
+  `session_id` — Phase 4's session metrics would have been empty for the harness
+  with the most rows. Pi and Codex fixtures already carried `cwd` for project
+  attribution; the Pi fixture now matches the live session-id shape too.
 
 ### Phase 5: Doctor diagnostics
 
@@ -203,7 +243,18 @@ Version bumps land on request (git operations stay user-owned).
   parser version, fingerprint changes, last error), pricing source and cache
   freshness, and configuration validation.
 - [ ] Reuse the persisted diagnostics and existing resolver and preference
-  warnings; introduce no new state.
+  warnings; introduce no new state. Detection for two of these already exists and
+  must be reused, not rebuilt: `store.all_sources()` plus
+  `collectors.PARSER_VERSIONS` (parser drift) and the on-disk existence check in
+  `cli._warn_store_quality` (vanished sources), both stderr-only today.
+- [ ] Flag reports whose metrics include last-good data from sources whose most
+  recent refresh failed, agent-scoped, as counts or booleans (never
+  `source_key` paths, which embed absolute paths). `store.failing_sources()` is
+  not agent-scoped and `UsageEntry` carries no `source_key`, so the plumbing
+  decision is part of this item. (Struck from Phase 4.)
+- [ ] Surface retained-but-unreachable history in the doctor view: sources whose
+  files no longer exist on disk keep their events by design, so reconcile by
+  visibility, never by deleting.
 
 ### Phase 6: Stable exports
 
@@ -217,6 +268,42 @@ Version bumps land on request (git operations stay user-owned).
 
 - [ ] Add deterministic budget pacing and insights only when their inputs are
   present and trustworthy.
+
+### Phase 8: Operational manual
+
+Write the manual for developers and agents who operate Eurysx, not for readers
+skimming a product page. Every command, flag, path, warning string, file, and
+JSON field it names must be verified against a live run, and every failure mode
+must have a named remedy.
+
+- [ ] Create `docs/manual.md` as the operational source of truth, with
+  README demoted to the concise product and technical overview (what it is, why,
+  install pointer, one configuration example, links into the manual). The manual
+  owns the authoritative JSONC schema; README keeps a summary and the privacy
+  statement.
+- [ ] Manual contents, at minimum: install and first run; full CLI contract
+  including every selector, exit behavior, and stdout/stderr split; store and
+  cache lifecycle on disk (what is disposable, what is retained, how a
+  parser-version bump re-collects); per-harness collector surface (what each
+  harness yields, source granularity, attribution keys, aggregate-only limits);
+  output contracts field by field for terminal and JSON; pricing and preference
+  precedence; a diagnostics table mapping each `Warning:` string to cause and
+  remedy; and a worked guide to adding a fifth collector.
+- [ ] Fold `docs/cli.md` and `docs/output.md` into the manual rather than
+  maintaining overlapping pages: keep one place per fact, with README, `AGENTS.md`,
+  and CHANGELOG pointing at it.
+- [ ] Write it so an agent can execute against it: exact commands, absolute
+  checkout-local paths, invariants stated as rules (recorded cost beats policy,
+  unknown pricing is never free, no content fields, no deletions in `report`),
+  and the release/version-bump checklist in one place.
+- [ ] Pin the manual against drift: a check that documented flags, warning
+  strings, and JSON keys exist in the source (grep-level is enough; no new
+  framework), so a phase that renames something cannot leave the manual behind.
+- [ ] Land the export-contract chapter after Phase 6 versions the JSON report;
+  until then mark that chapter as tracking an unstable shape. Phase 8 itself is
+  not blocked on Phases 5-7 and can start once Phase 4 closes.
+- [ ] Update the Act III docs convention in `AGENTS.md` to name `docs/manual.md`
+  as the operational source of truth when this lands.
 
 ## Act IV: Local View
 

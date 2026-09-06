@@ -1,6 +1,6 @@
 # CLI reference
 
-Applies to Eurysx v0.0.5. The terminal command is `eurysx`.
+Applies to Eurysx v0.0.6. The terminal command is `eurysx`.
 
 ## Command forms
 
@@ -9,6 +9,13 @@ Applies to Eurysx v0.0.5. The terminal command is `eurysx`.
 | `eurysx` (no command) | Collects current local metadata for detected agents, then reports it. |
 | `eurysx collect` | Stores metadata only; prints no report. |
 | `eurysx report` | Reads the local store without collecting. Requires the store to already exist. |
+
+`report` never re-normalizes stored rows: after a collector's parser version
+bumps, stored events are only rewritten by the next `eurysx` or `eurysx collect`
+run. Between the upgrade and that run, a `report` can read narrower than the
+store holds (e.g. OpenCode rows stored before parser v3 keep epoch-millis
+timestamps, which the period filter drops, so a bounded `report` shows
+`No usage data found` while the all-time view still totals them).
 
 `-v` / `--version` prints the installed version and exits.
 
@@ -38,7 +45,10 @@ Exactly one selector applies per run; the group is mutually exclusive.
 
 No selector means all time. Claude Code's aggregate stats cache is excluded
 from selected (non-all-time) ranges with a scope warning; it remains available
-for the all-time view.
+for the all-time view, where its `lastComputedDate` stamp (a plain `YYYY-MM-DD`)
+is read as the first-usage date. Because that one row summarizes all recorded
+history, all-time Claude Code extrapolations attribute the whole aggregate over
+that span and its `DAILY ACTIVITY` section stays empty.
 
 Bounded runs (any period selector set) also compare the period against the
 same-length window that ends the day before it starts, in a per-agent
@@ -75,6 +85,12 @@ and print `No usage data found` rather than disappearing.
 - `all` with no detected harnesses prints `No agents detected. Check if any
   agents are installed.`
 - Declared selectors are validated before any collection runs.
+- stderr carries diagnostics that never enter the report: resolver and
+  preference warnings, per-source refresh failures (last-good data retained),
+  sources still stored on an older parser version, and sources whose files no
+  longer exist on disk. The last two are advisory only: nothing is deleted and
+  no analyzed number changes. `eurysx doctor` (planned, Act III Phase 5) will
+  expose them as a per-source view.
 
 ## Examples
 

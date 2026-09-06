@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.0.5 is in development. It is a local CLI, not a hosted service.
+> Eurysx v0.0.6 is in development. It is a local CLI, not a hosted service.
 
 ## Install
 
@@ -225,6 +225,10 @@ file.
 
 - Claude Code's stats cache is aggregate-only. Eurysx excludes it from selected
   date ranges and reports a scope warning; it remains available for all-time use.
+  Its single row per model is stamped with `lastComputedDate`, so all-time Claude
+  Code rates spread the whole aggregate over that observed span and its
+  day-by-day activity table stays empty (`n/a` per-active-day lines) rather than
+  inventing a one-day spike.
 - The supported collectors are Claude Code, OpenCode, Pi, and Codex only.
 - Pricing data is metadata only. Source pricing may be unavailable, in which case
   the relevant cost remains unknown.
