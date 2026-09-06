@@ -193,6 +193,15 @@ def get_date_range(args: argparse.Namespace,
     return today - timedelta(days=days - 1), today, label
 
 
+def _previous_window(start_date, end_date):
+    """Same-length window ending the day before start; None when all-time."""
+    if start_date is None:
+        return None, None
+    previous_end = start_date - timedelta(days=1)
+    span = (end_date - start_date).days + 1
+    return previous_end - timedelta(days=span - 1), previous_end
+
+
 def _refresh_store(store, agents):
     """Collect per raw source, skipping sources whose fingerprint and parser version are unchanged."""
     for agent in agents:
@@ -269,6 +278,20 @@ def main(argv=None):
                                models=args.model, providers=args.provider):
         usage = _usage_from_store(record)
         agent_data.setdefault(usage.agent, []).append(usage)
+    prev_start, prev_end = _previous_window(start_date, end_date)
+    prev_agent_data = {}
+    if prev_start is not None:
+        for record in store.events(read_agents, prev_start, prev_end,
+                                   models=args.model, providers=args.provider):
+            usage = _usage_from_store(record)
+            prev_agent_data.setdefault(usage.agent, []).append(usage)
+        if agents_to_analyze:
+            prev_agent_data = {
+                a: prev_agent_data[a] for a in agents_to_analyze if a in prev_agent_data
+            }
+        prev_label = f"{prev_start} to {prev_end}"
+    else:
+        prev_label = None
     if agents_to_analyze:
         agent_data = {a: agent_data[a] for a in agents_to_analyze if a in agent_data}
     # Agents present in the store keep their report block even when no row falls
@@ -312,6 +335,18 @@ def main(argv=None):
         report.agent_displays[agent] = UsageAnalyzer.display_period(
             usages, start_date, end_date, period_label, is_all_time,
         )
+        if prev_start is not None:
+            prev_usages = prev_agent_data.get(agent, [])
+            apply_pricing(prev_usages, resolver, preferences)
+            prev_stats = UsageAnalyzer.analyze_agent(
+                agent, prev_usages, prev_start, prev_end, prev_label,
+                include_aggregated=False,
+                aggregates_present=store.has_aggregate_events([agent]),
+                billing_modes=set(args.billing_mode) if args.billing_mode else None,
+            )
+            report.period_comparison[agent] = UsageAnalyzer.compare_periods(
+                stats, prev_stats, period_label, prev_label,
+            )
         print_single_agent_report(report, agent)
 
     if len(agent_data) > 1:

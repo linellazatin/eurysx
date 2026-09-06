@@ -906,6 +906,91 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.total_tokens, 150)
 
 
+class GroupingDimensionTests(unittest.TestCase):
+    """Phase 3C: per-project and per-session grouping in analysis and terminal."""
+
+    @staticmethod
+    def _usage(project_id=None, session_id=None, tokens=100, cost=1.0):
+        return app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            input_tokens=tokens, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=tokens, cost=cost,
+            cost_breakdown={"total": cost}, provider="openai",
+            cost_status="recorded", project_id=project_id, session_id=session_id,
+            model_requests=1, model_turns=1, model_tool_calls=0,
+        )
+
+    @staticmethod
+    def _bucket(*buckets):
+        return {
+            "cache_read": 0, "cache_write": 0, "cost": sum(b[1] for b in buckets),
+            "input": sum(b[0] for b in buckets), "model_requests": len(buckets),
+            "model_tool_calls": 0, "model_turns": len(buckets), "output": 0,
+        }
+
+    @staticmethod
+    def _report(stats):
+        period = date(2026, 8, 1)
+        return app.AnalysisReport(
+            start_date=period, end_date=period, period_label="1d",
+            agent_stats={"pi": stats},
+            agent_displays={"pi": models.AgentDisplay(period, period, "1d")},
+        )
+
+    def test_project_and_session_breakdowns_group_by_attribute(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage(project_id="/repo/a", session_id="s1", tokens=10, cost=0.1),
+                self._usage(project_id="/repo/a", session_id="s2", tokens=20, cost=0.2),
+                self._usage(project_id="/repo/b", session_id="s3", tokens=30, cost=0.3),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        self.assertEqual(stats.project_breakdown, {
+            "/repo/a": self._bucket((10, 0.1), (20, 0.2)),
+            "/repo/b": self._bucket((30, 0.3)),
+        })
+        self.assertEqual(stats.session_breakdown, {
+            "s1": self._bucket((10, 0.1)),
+            "s2": self._bucket((20, 0.2)),
+            "s3": self._bucket((30, 0.3)),
+        })
+
+    def test_unattributed_rows_fall_into_unknown_bucket(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage(), self._usage()],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        self.assertEqual(list(stats.project_breakdown), ["unknown"])
+        self.assertEqual(list(stats.session_breakdown), ["unknown"])
+        self.assertEqual(stats.project_breakdown["unknown"]["input"], 200)
+
+    def test_terminal_shows_grouping_sections_and_unattributed_note(self):
+        attributed = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage(project_id="/repo/a", session_id="s1")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._report(attributed), "pi")
+        terminal = output.getvalue()
+        self.assertIn("BREAKDOWN BY SESSION", terminal)
+        self.assertIn("s1:", terminal)
+        self.assertIn("BREAKDOWN BY PROJECT", terminal)
+        self.assertIn("/repo/a:", terminal)
+
+        unattributed = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage()],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._report(unattributed), "pi")
+        terminal = output.getvalue()
+        self.assertIn("No session attribution available.", terminal)
+        self.assertIn("No project attribution available.", terminal)
+
+
 class DisplayPeriodTests(unittest.TestCase):
     """Direct coverage for UsageAnalyzer.display_period (all-time branches)."""
 
@@ -1196,6 +1281,69 @@ class DateRangeTests(unittest.TestCase):
                         report["agent_stats"]["pi"]["total_tokens"], expected_total
                     )
 
+    def test_previous_window_same_length_before_current(self):
+        cases = [
+            (date(2026, 8, 1), date(2026, 8, 3), (date(2026, 7, 29), date(2026, 7, 31))),
+            (None, date(2026, 8, 3), (None, None)),
+            (date(2026, 2, 1), date(2026, 2, 28), (date(2026, 1, 4), date(2026, 1, 31))),
+            (date(2026, 8, 3), date(2026, 8, 3), (date(2026, 8, 2), date(2026, 8, 2))),
+        ]
+        for start, end, expected in cases:
+            with self.subTest(start=start):
+                self.assertEqual(app._previous_window(start, end), expected)
+
+    def test_simulated_cli_period_comparison_uses_previous_window(self):
+        def entries():
+            return [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-07-31T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=40, cost=4.0,
+                    cost_breakdown={"total": 4.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=100, cost=1.0,
+                    cost_breakdown={"total": 1.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+            ]
+
+        def fake_sources(agent, home=None):
+            return [Source(f"{agent}:fake", "fingerprint-1", "1", entries)]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            patches = (
+                patch.object(app, "detect_agents", return_value=["pi"]),
+                patch.object(app, "collect_sources", side_effect=fake_sources),
+                patch.object(app, "PricingResolver", return_value=resolver),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+            )
+            output_path = root / "report.json"
+            terminal = io.StringIO()
+            with patches[0], patches[1], patches[2], patches[3], \
+                    patch("sys.argv", [
+                        "eurysx", "--agent", "pi",
+                        "--from", "2026-08-01", "--to", "2026-08-01",
+                        "--output", str(output_path),
+                    ]), redirect_stdout(terminal):
+                app.main()
+            report = json.loads(output_path.read_text())
+            comparison = report["period_comparison"]["pi"]
+            terminal_text = terminal.getvalue()
+
+        self.assertEqual(comparison["current"]["total_tokens"], 100)
+        self.assertEqual(comparison["previous"]["total_tokens"], 40)
+        self.assertEqual(comparison["current"]["known_cost"], 1.0)
+        self.assertEqual(comparison["previous"]["known_cost"], 4.0)
+        self.assertEqual(comparison["previous_period"], "2026-07-31 to 2026-07-31")
+        self.assertIn("PERIOD COMPARISON", terminal_text)
+        self.assertIn("+150%", terminal_text)  # (100 - 40) / 40
+
     def test_selected_ranges_exclude_claude_aggregate_and_warn(self):
         aggregate = app.UsageEntry(
             agent="claude-code", model_id="claude-sonnet-4", timestamp="2026-08-01",
@@ -1258,15 +1406,16 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     """Pre-refactor baseline: locks the report shape Act III Phase 2 and 6 diff against."""
 
     TOP_LEVEL_KEYS = [
-        "agent_stats", "agents_analyzed", "analysis_period", "preferences", "pricing",
+        "agent_stats", "agents_analyzed", "analysis_period", "period_comparison",
+        "preferences", "pricing",
     ]
     AGENT_STATS_KEYS = [
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
         "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
         "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
-        "pricing_fetched_at", "pricing_sources", "quarterly_cost",
-        "route_breakdown", "scope_warnings",
+        "pricing_fetched_at", "pricing_sources", "project_breakdown",
+        "quarterly_cost", "route_breakdown", "scope_warnings", "session_breakdown",
         "sessions_count", "total_cache_read_tokens", "total_cache_write_tokens",
         "total_cost", "total_input_tokens", "total_output_tokens", "total_tokens",
         "unique_models", "unknown_cost_count", "unknown_cost_tokens", "usage_entries",
@@ -1274,9 +1423,11 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     ]
     TERMINAL_SECTIONS = [
         "TOTAL USAGE (ALL MODELS)", "BREAKDOWN BY MODEL",
+        "BREAKDOWN BY SESSION", "BREAKDOWN BY PROJECT",
         "COST PROJECTIONS PER TIME PERIOD", "TOKEN VOLUME PER TIME PERIOD",
         "MODEL ACTIVITY VOLUME PER TIME PERIOD", "DAILY ACTIVITY",
         "SUMMARY STATISTICS", "CACHE EFFECTIVENESS", "COST ANALYSIS",
+        "PERIOD COMPARISON",
     ]
 
     EXPECTED_PI_STATS = {
@@ -1319,6 +1470,14 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "usage_entries": 1,
         "weekly_cost": 8.75,
         "yearly_cost": 456.25,
+        "project_breakdown": {"/repo/a": {
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
+        }},
+        "session_breakdown": {"s1": {
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
+        }},
     }
 
     def _run(self):

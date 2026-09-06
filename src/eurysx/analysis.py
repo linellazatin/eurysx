@@ -2,9 +2,19 @@
 
 from collections import defaultdict
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import AgentDisplay, AgentStats, UsageEntry
+
+
+def _comparison_fields(stats: AgentStats) -> Dict[str, Any]:
+    """Compact per-period figures for the period comparison block."""
+    return {
+        "total_tokens": stats.total_tokens,
+        "known_cost": stats.known_cost,
+        "usage_entries": stats.usage_entries,
+        "model_requests": stats.total_model_requests,
+    }
 
 
 class UsageAnalyzer:
@@ -83,6 +93,14 @@ class UsageAnalyzer:
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
+        project_tokens = defaultdict(lambda: {
+            'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+        })
+        session_tokens = defaultdict(lambda: {
+            'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+        })
         daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0})
         route_tokens = defaultdict(lambda: {
             'tokens': 0, 'cost': 0.0, 'entries': 0,
@@ -105,6 +123,12 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['model_requests'] += usage.model_requests
             model_tokens[usage.model_id]['model_turns'] += usage.model_turns
             model_tokens[usage.model_id]['model_tool_calls'] += usage.model_tool_calls
+            project_tokens[usage.project_id or 'unknown']['model_requests'] += usage.model_requests
+            project_tokens[usage.project_id or 'unknown']['model_turns'] += usage.model_turns
+            project_tokens[usage.project_id or 'unknown']['model_tool_calls'] += usage.model_tool_calls
+            session_tokens[usage.session_id or 'unknown']['model_requests'] += usage.model_requests
+            session_tokens[usage.session_id or 'unknown']['model_turns'] += usage.model_turns
+            session_tokens[usage.session_id or 'unknown']['model_tool_calls'] += usage.model_tool_calls
             if usage.is_metric_only:
                 continue
             stats.billing_mode_tokens[billing_mode] = (
@@ -140,9 +164,19 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['output'] += usage.output_tokens
             model_tokens[usage.model_id]['cache_read'] += usage.cache_read_tokens
             model_tokens[usage.model_id]['cache_write'] += usage.cache_write_tokens
+            project_tokens[usage.project_id or 'unknown']['input'] += usage.input_tokens
+            project_tokens[usage.project_id or 'unknown']['output'] += usage.output_tokens
+            project_tokens[usage.project_id or 'unknown']['cache_read'] += usage.cache_read_tokens
+            project_tokens[usage.project_id or 'unknown']['cache_write'] += usage.cache_write_tokens
+            session_tokens[usage.session_id or 'unknown']['input'] += usage.input_tokens
+            session_tokens[usage.session_id or 'unknown']['output'] += usage.output_tokens
+            session_tokens[usage.session_id or 'unknown']['cache_read'] += usage.cache_read_tokens
+            session_tokens[usage.session_id or 'unknown']['cache_write'] += usage.cache_write_tokens
             if usage.cost_status not in ("unknown", "not_applicable"):
                 model_tokens[usage.model_id]['cost'] += usage.cost
                 route_data['cost'] += usage.cost
+                project_tokens[usage.project_id or 'unknown']['cost'] += usage.cost
+                session_tokens[usage.session_id or 'unknown']['cost'] += usage.cost
             
             stats.total_input_tokens += usage.input_tokens
             stats.total_output_tokens += usage.output_tokens
@@ -162,6 +196,8 @@ class UsageAnalyzer:
         stats.sessions_count = len(sessions)
         stats.model_breakdown = dict(model_tokens)
         stats.route_breakdown = dict(route_tokens)
+        stats.project_breakdown = dict(project_tokens)
+        stats.session_breakdown = dict(session_tokens)
         stats.daily_activity = dict(daily_tokens)
         if stats.metered_tokens:
             stats.priced_token_coverage = (
@@ -191,3 +227,14 @@ class UsageAnalyzer:
             stats.yearly_cost = stats.daily_cost * 365
         
         return stats
+
+    @staticmethod
+    def compare_periods(current: AgentStats, previous: AgentStats,
+                        current_label: str, previous_label: str) -> Dict[str, Any]:
+        """Per-agent previous-vs-current block for the terminal table and JSON."""
+        return {
+            "current_period": current_label,
+            "previous_period": previous_label,
+            "current": _comparison_fields(current),
+            "previous": _comparison_fields(previous),
+        }
