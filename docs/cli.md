@@ -40,6 +40,10 @@ No selector means all time. Claude Code's aggregate stats cache is excluded
 from selected (non-all-time) ranges with a scope warning; it remains available
 for the all-time view.
 
+Bounded runs (any period selector set) also compare the period against the
+same-length window that ends the day before it starts, in a per-agent
+`PERIOD COMPARISON` section; all-time runs have no previous window and omit it.
+
 ## Filter selectors
 
 Filters narrow the analyzed rows and combine freely with `--agent` and the

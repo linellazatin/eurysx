@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.0.4 is in development. It is a local CLI, not a hosted service.
+> Eurysx v0.0.5 is in development. It is a local CLI, not a hosted service.
 
 ## Install
 
@@ -39,6 +39,11 @@ the store is `data/eurysx.db` relative to the current project directory. Set
 Period selectors are mutually exclusive: `--days N`, `--weeks N`,
 `--from YYYY-MM-DD [--to YYYY-MM-DD]`, `--month YYYY-MM`,
 `--quarter YYYY-QN`, `--year YYYY`, and `--ytd`. Rolling periods include today.
+
+Filter selectors `--model`, `--provider`, and `--billing-mode` narrow the
+analyzed rows and combine with `--agent` and the period selectors; bounded
+period runs also compare against the same-length previous window. See
+[docs/cli.md](docs/cli.md) for details.
 
 ## Documentation
 

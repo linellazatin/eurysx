@@ -35,6 +35,11 @@ entering analysis; they do not add fields or change the shapes documented
 below. An agent left with no matching rows prints `No usage data found` and,
 for `--output`, still appears in `agent_stats` with zeroed totals.
 
+Bounded period runs append a `PERIOD COMPARISON` section to each agent's
+report: total tokens, known cost, usage entries, and model requests for the
+current period versus the same-length previous window, with percent change.
+All-time runs have no previous window and omit the section.
+
 Privacy: prompts, responses, file contents, tool arguments, and tool results
 are never persisted or printed. The report shows aggregate tokens, counts,
 cost, and pricing provenance only.
@@ -50,6 +55,7 @@ Top level:
 | `pricing` | object | `config_file`, `sources` (per-source fetch timestamps), `warnings`. |
 | `preferences` | object | `config_file`, `warnings`. |
 | `agent_stats` | object | Per-agent stats, keyed by agent name. |
+| `period_comparison` | object | Per-agent previous-window comparison, keyed by agent name; empty `{}` for all-time runs where no previous window exists. See below. |
 
 Per-agent stats block within `agent_stats`:
 
@@ -74,8 +80,18 @@ Per-agent stats block within `agent_stats`:
 | `usage_entries` / `sessions_count` | int | Entry and session counts. |
 | `unique_models` | list[str] | Sorted model ids. |
 | `model_breakdown` | object | `{model_id: {input, output, cache_read, cache_write, cost, model_requests, model_turns, model_tool_calls}}`. |
+| `project_breakdown` | object | `{project_id: ...}` same shape as `model_breakdown`; unattributed rows fall under the `unknown` key. |
+| `session_breakdown` | object | `{session_id: ...}` same shape as `model_breakdown`; unattributed rows fall under the `unknown` key. |
 | `daily_activity` | object | `{"YYYY-MM-DD": {cost, tokens}}`. |
 | `scope_warnings` | list[str] | Non-fatal note per agent (e.g. Claude Code aggregate exclusion). |
+
+Period comparison block within `period_comparison` (present only when the run
+has a bounded period):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `current_period` / `previous_period` | string | Period labels (the previous window is the same length, ending the day before the current period starts). |
+| `current` / `previous` | object | Compact figures: `total_tokens`, `known_cost`, `usage_entries`, `model_requests`. |
 
 Notes:
 

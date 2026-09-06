@@ -144,33 +144,49 @@ Version bumps land on request (git operations stay user-owned).
 
 ### Phase 3A: SQL pushdown and indices
 
-- [ ] Push agent and date-range filtering into `store.events()` WHERE clauses,
+- [x] Push agent and date-range filtering into `store.events()` WHERE clauses,
   replacing the load-then-filter-in-Python path (claude-code aggregate
   handling must behave identically in selected ranges).
-- [ ] Add indices on `provider`, `model_id`, `project_id`, and `session_id`.
-- [ ] No new CLI flags; report output unchanged — proven by the Phase 1/2
+- [x] Add indices on `provider`, `model_id`, `project_id`, and `session_id`.
+- [x] No new CLI flags; report output unchanged — proven by the Phase 1/2
   baseline tests plus a SQL-vs-Python equivalence test.
 
 ### Phase 3B: Filters and CLI selectors
 
-- [ ] Add model, provider, and billing-mode filter parameters to `store.events()`.
-- [ ] Add `--model`, `--provider`, and `--billing-mode` selectors, combinable
+- [x] Add model and provider filter parameters to `store.events()` (SQL WHERE).
+  `billing_mode` is deliberately NOT a stored column — it is a pricing-time
+  artifact assigned by policy and flipped to `metered` when recorded cost
+  conflicts with policy, so it filters post-pricing in
+  `UsageAnalyzer.analyze_agent` instead: SQL would drop rows the report must
+  keep with a conflict warning.
+- [x] Add `--model`, `--provider`, and `--billing-mode` selectors, combinable
   with `--agent` and the period selectors.
-- [ ] Tests per selector and for combinations, all routed through SQL.
+- [x] Tests per selector and for combinations: model/provider routed through
+  SQL (`--provider unknown` matches NULL providers via COALESCE),
+  billing-mode through the post-pricing hook incl. the
+  recorded-cost-flips-to-metered case.
 
 ### Phase 3C: Grouping dimensions
 
-- [ ] Group the analysis result by model, provider, project, session, and day,
+- [x] Group the analysis result by model, provider, project, session, and day,
   where stored metadata supports them (`project_id`/`session_id` only where
-  attributed).
-- [ ] Show the new dimensions in terminal and JSON output as additive fields;
-  tests per dimension including the unattributed-metadata case.
+  attributed). Model/provider/day groups already existed in `AgentStats`;
+  per-project and per-session groupings were added as
+  `project_breakdown`/`session_breakdown`, same shape as `model_breakdown`,
+  with an `unknown` bucket for unattributed rows.
+- [x] Show the new dimensions in terminal and JSON output as additive fields;
+  tests per dimension including the unattributed-metadata case (terminal
+  prints `No ... attribution available.` when nothing is attributed).
 
 ### Phase 3D: Period-to-period comparisons
 
-- [ ] Compare two periods computed from the same store query path
-  (e.g., previous period vs current).
-- [ ] Terminal comparison table and additive JSON section, with tests.
+- [x] Compare two periods computed from the same store query path
+  (previous same-length window vs current), reusing `store.events()` with the
+  same filters and the post-pricing billing-mode hook for both periods.
+- [x] Terminal `PERIOD COMPARISON` table (tokens, known cost, entries,
+  requests with percent change) and additive `period_comparison` JSON section,
+  with tests; all-time runs omit the comparison because no previous window
+  exists.
 
 ### Phase 4: Richer metrics
 
