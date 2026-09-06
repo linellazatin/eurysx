@@ -81,6 +81,8 @@ class AgentStats:
     pricing_sources: Set[str] = None
     pricing_fetched_at: Dict[str, str] = None
     scope_warnings: List[str] = None
+    project_breakdown: Dict[str, Dict] = None  # Per-project token/cost breakdown ('unknown' bucket for unattributed)
+    session_breakdown: Dict[str, Dict] = None  # Per-session token/cost breakdown
     
     def __post_init__(self):
         if self.unique_models is None:
@@ -103,6 +105,10 @@ class AgentStats:
             self.pricing_fetched_at = {}
         if self.scope_warnings is None:
             self.scope_warnings = []
+        if self.project_breakdown is None:
+            self.project_breakdown = {}
+        if self.session_breakdown is None:
+            self.session_breakdown = {}
 
 
 @dataclass
@@ -121,5 +127,6 @@ class AnalysisReport:
     period_label: str
     agent_stats: Dict[str, AgentStats] = field(default_factory=dict)
     agent_displays: Dict[str, AgentDisplay] = field(default_factory=dict)
+    period_comparison: Dict[str, Any] = field(default_factory=dict)
     pricing: Dict[str, Any] = field(default_factory=dict)
     preferences: Dict[str, Any] = field(default_factory=dict)

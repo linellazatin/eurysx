@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.0.5] - More hardening: pushdown, selectors, grouping, comparisons
+
+### Added
+
+- `--model` and `--provider` selectors, SQL WHERE filters in `store.events()`,
+  combinable with `--agent` and the period selectors; NULL providers match
+  `--provider unknown` (COALESCE).
+- `--billing-mode` (metered|subscription|credit|quota|local|unknown), applied
+  post-pricing via the `analyze_agent(billing_modes=...)` hook: billing_mode
+  is a pricing-time artifact flipped to `metered` on recorded-cost conflict,
+  so SQL cannot pre-filter it.
+- `period_comparison`: bounded runs compare the current period against the
+  same-length previous window (`_previous_window`, same filters) — terminal
+  `PERIOD COMPARISON` (tokens, cost, entries, requests + Δ) and an additive
+  JSON block; all-time runs omit it.
+
+### Changed
+
+- OpenCode timestamps stored as ISO-8601 (parser v3); epoch-millis rows
+  re-collect on refresh.
+- Claude Code aggregate scope warning now via a store presence check, so it
+  survives SQL filtering.
+- `store.events()` filters agents, dates, models, and providers in SQL; the
+  Python date filter remains as the equivalence reference.
+- Indices on provider, model, project, session (additive, idempotent).
+- `AgentStats` gained `project_breakdown`/`session_breakdown` (model_breakdown
+  shape; `unknown` bucket for unattributed rows), shown in terminal as
+  `BREAKDOWN BY SESSION`/`BREAKDOWN BY PROJECT` and in JSON; unattributed-only
+  sections print `No ... attribution available.`.
+
+### Tests
+
+- SQL-vs-Python equivalence, presence check, indices, grouping (incl.
+  unattributed), two-period reuse/disjointness.
+- Per-selector and combination tests incl.
+  recorded-cost-flips-to-metered; previous-window math; simulated-CLI
+  comparison asserting values and delta.
+- Phase 1 baseline extended for additive keys `project_breakdown`,
+  `session_breakdown`, `period_comparison`; Phase 6 pins the final contract.
+
 ## [0.0.4] - Report baseline + result seams
 
 ### Added

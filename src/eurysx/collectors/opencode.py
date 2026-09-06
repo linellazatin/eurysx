@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,7 +12,12 @@ from .paths import AgentPaths
 from .sources import Source, fingerprint_paths
 
 
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
+
+
+def _epoch_ms_to_iso(timestamp_ms: int) -> str:
+    """Epoch milliseconds UTC -> ISO-8601 text, sortable alongside ISO rows."""
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
 
 
 class OpenCodeExtractor:
@@ -47,7 +53,7 @@ class OpenCodeExtractor:
                 project_id = rest[0] if rest else None
                 session_projects[session_id] = project_id
                 usages.append(UsageEntry(
-                    agent='opencode', model_id=model_id, timestamp=str(timestamp_ms),
+                    agent='opencode', model_id=model_id, timestamp=_epoch_ms_to_iso(timestamp_ms),
                     input_tokens=input_tokens or 0, output_tokens=output_tokens or 0,
                     cache_read_tokens=cache_read or 0, cache_write_tokens=cache_write or 0,
                     total_tokens=total_tokens, cost=cost or 0.0,
@@ -73,7 +79,7 @@ class OpenCodeExtractor:
                 if message.get('role') != 'assistant':
                     continue
                 usages.append(UsageEntry(
-                    agent='opencode', model_id=message.get('modelID', 'unknown'), timestamp=str(timestamp_ms),
+                    agent='opencode', model_id=message.get('modelID', 'unknown'), timestamp=_epoch_ms_to_iso(timestamp_ms),
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
                     project_id=session_projects.get(session_id),
@@ -98,7 +104,7 @@ class OpenCodeExtractor:
                     model_id = 'unknown'
                     provider = None
                 usages.append(UsageEntry(
-                    agent='opencode', model_id=model_id, timestamp=str(timestamp_ms),
+                    agent='opencode', model_id=model_id, timestamp=_epoch_ms_to_iso(timestamp_ms),
                     input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
                     total_tokens=0, cost=0.0, cost_breakdown={}, session_id=session_id,
                     project_id=session_projects.get(session_id),

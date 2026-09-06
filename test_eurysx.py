@@ -140,7 +140,7 @@ class CollectorFixtureTests(unittest.TestCase):
         usage = next(item for item in usages if not item.is_metric_only)
         self.assertEqual(usage.model_id, "gpt-5.6")
         self.assertEqual(usage.provider, "openai")
-        self.assertEqual(usage.timestamp, "1754056800000")
+        self.assertEqual(usage.timestamp, "2025-08-01T14:00:00+00:00")
         self.assertEqual(usage.session_id, "opencode-session-1")
         self.assertEqual(usage.project_id, "/repo/project-a")
         self.assertEqual(
@@ -263,6 +263,227 @@ class UsageStoreTests(unittest.TestCase):
             events = store.events(["pi"])
 
         self.assertEqual(len(events), 1)
+
+    def test_has_aggregate_events_presence_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            aggregate = app.UsageEntry(
+                agent="claude-code", model_id="claude-sonnet-4",
+                timestamp="2026-08-01T00:00:00Z", input_tokens=1, output_tokens=0,
+                cache_read_tokens=0, cache_write_tokens=0, total_tokens=1,
+                cost=0.0, cost_breakdown={}, is_aggregated=True,
+            )
+            usage = app.UsageEntry(
+                agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=1, cost=0.0, cost_breakdown={},
+            )
+            store.replace_source("claude-code:one", "claude-code", "fp", [aggregate])
+            store.replace_source("pi:one", "pi", "fp", [usage])
+
+            self.assertTrue(store.has_aggregate_events())
+            self.assertTrue(store.has_aggregate_events(["claude-code"]))
+            self.assertFalse(store.has_aggregate_events(["pi"]))
+            self.assertEqual(store.distinct_agents(), ["claude-code", "pi"])
+
+    def test_sql_range_filter_matches_python_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            pi_rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=10, output_tokens=20, cache_read_tokens=30,
+                    cache_write_tokens=40, total_tokens=100, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-03T23:59:59Z",
+                    input_tokens=1, output_tokens=1, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=2, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-04T00:00:00Z",
+                    input_tokens=1, output_tokens=1, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=2, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+            ]
+            aggregate = app.UsageEntry(
+                agent="claude-code", model_id="claude-sonnet-4",
+                timestamp="2026-08-01T00:00:00Z", input_tokens=1, output_tokens=0,
+                cache_read_tokens=0, cache_write_tokens=0, total_tokens=1,
+                cost=0.0, cost_breakdown={}, is_aggregated=True,
+            )
+            codex_rows = [
+                app.UsageEntry(
+                    agent="codex", model_id="model", timestamp="not-a-date",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                ),
+                app.UsageEntry(
+                    agent="codex", model_id="model", timestamp="2026-07-31T23:59:59Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                ),
+            ]
+            store.replace_source("pi:one", "pi", "fp", pi_rows)
+            store.replace_source("claude-code:one", "claude-code", "fp", [aggregate])
+            store.replace_source("codex:one", "codex", "fp", codex_rows)
+
+            agents = ["pi", "claude-code", "codex"]
+            start, end = date(2026, 8, 1), date(2026, 8, 3)
+
+            ids = lambda records: sorted(
+                (r["agent"], r["timestamp"]) for r in records
+            )
+            entry_ids = lambda entries: sorted(
+                (entry.agent, entry.timestamp) for entry in entries
+            )
+            sql = ids(store.events(agents, start, end))
+            python_reference = entry_ids(app.UsageAnalyzer.filter_by_date_range(
+                [app._usage_from_store(r) for r in store.events(agents)],
+                start, end, include_aggregated=False,
+            ))
+            self.assertEqual(sql, python_reference)
+            self.assertTrue(sql)  # non-vacuous: at least the in-range pi rows
+            self.assertNotIn(("claude-code", "2026-08-01T00:00:00Z"), sql)
+
+            # All-time path keeps every row including aggregates and garbage.
+            all_time = ids(store.events(agents))
+            self.assertEqual(
+                all_time,
+                entry_ids(app.UsageAnalyzer.filter_by_date_range(
+                    [app._usage_from_store(r) for r in store.events(agents)],
+                    None, end, include_aggregated=True,
+                )),
+            )
+            self.assertEqual(len(all_time), 6)
+
+            # Single-agent filtering routes through the same WHERE clause.
+            self.assertEqual(
+                ids(store.events(["pi"], start, end)),
+                [record for record in sql if record[0] == "pi"],
+            )
+
+    def test_grouping_dimensions_are_queryable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T10:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s1", project_id="p1",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s2", project_id="p1",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-02T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, session_id="s3",
+                ),
+            ]
+            store.replace_source("pi:one", "pi", "fp", rows)
+            with sqlite3.connect(store.path) as connection:
+                project_buckets = dict(connection.execute(
+                    "SELECT project_id, COUNT(*) FROM events GROUP BY project_id"
+                ))
+                session_buckets = dict(connection.execute(
+                    "SELECT session_id, COUNT(*) FROM events GROUP BY session_id"
+                ))
+                day_buckets = dict(connection.execute(
+                    "SELECT substr(timestamp, 1, 10), COUNT(*) FROM events"
+                    " GROUP BY substr(timestamp, 1, 10)"
+                ))
+
+        self.assertEqual(project_buckets, {"p1": 2, None: 1})
+        self.assertEqual(session_buckets, {"s1": 1, "s2": 1, "s3": 1})
+        self.assertEqual(day_buckets, {"2026-08-01": 2, "2026-08-02": 1})
+
+    def test_two_periods_from_one_query_path_are_disjoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp=f"2026-{month:02d}-15T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={},
+                )
+                for month in (7, 8, 9)
+            ]
+            store.replace_source("pi:one", "pi", "fp", rows)
+            july = store.events(["pi"], date(2026, 7, 1), date(2026, 7, 31))
+            august = store.events(["pi"], date(2026, 8, 1), date(2026, 8, 31))
+            all_months = store.events(["pi"])
+
+        self.assertTrue(july)
+        self.assertTrue(august)
+        self.assertEqual(len(july) + len(august), len(all_months) - 1)
+        self.assertEqual(
+            {r["timestamp"] for r in july} & {r["timestamp"] for r in august},
+            set(),
+        )
+
+    def test_events_dimension_indices_exist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "data" / "eurysx.db"
+            UsageStore(path)
+            connection = sqlite3.connect(path)
+            names = {row[1] for row in connection.execute("PRAGMA index_list(events)")}
+            connection.close()
+            UsageStore(path)  # idempotent reopen on the same store
+        self.assertTrue({
+            "events_provider", "events_model_id",
+            "events_project_id", "events_session_id",
+        }.issubset(names))
+
+    def test_events_model_and_provider_filters_sql(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            pi_rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model-a", timestamp="2026-08-01T10:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model-b", timestamp="2026-08-01T11:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, provider=None,
+                ),
+            ]
+            codex_row = app.UsageEntry(
+                agent="codex", model_id="model-a", timestamp="2026-08-01T12:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=1, cost=0.0,
+                cost_breakdown={}, provider=None,
+            )
+            store.replace_source("pi:one", "pi", "fp", pi_rows)
+            store.replace_source("codex:one", "codex", "fp", [codex_row])
+
+            ids = lambda records: sorted((r["agent"], r["model_id"]) for r in records)
+            self.assertEqual(ids(store.events(models=["model-a"])),
+                             [("codex", "model-a"), ("pi", "model-a")])
+            self.assertEqual(ids(store.events(providers=["openai"])),
+                             [("pi", "model-a")])
+            # NULL providers match 'unknown', mirroring route-breakdown labels.
+            self.assertEqual(ids(store.events(providers=["unknown"])),
+                             [("codex", "model-a"), ("pi", "model-b")])
+            combined = store.events(["pi"], date(2026, 8, 1), date(2026, 8, 1),
+                                    models=["model-a"], providers=["openai"])
+            self.assertEqual(ids(combined), [("pi", "model-a")])
+            self.assertEqual(store.events(models=["missing-model"]), [])
 
 
 class IncrementalCollectionTests(unittest.TestCase):
@@ -653,6 +874,122 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.unknown_cost_tokens, 0)
         self.assertEqual(stats.priced_token_coverage, 1.0)
 
+    def test_billing_mode_filter_keeps_only_selected_modes(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        subscription = self._usage("recorded", 1.0, 50)
+        subscription.billing_mode = "subscription"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, subscription],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+            billing_modes={"subscription"},
+        )
+
+        self.assertEqual(stats.usage_entries, 1)
+        self.assertEqual(stats.total_tokens, 50)
+        self.assertEqual(stats.metered_tokens, 0)
+        self.assertEqual(stats.non_metered_tokens, {"subscription": 50})
+
+    def test_billing_mode_filter_default_keeps_all_modes(self):
+        metered = self._usage("recorded", 1.0, 100)
+        metered.billing_mode = "metered"
+        subscription = self._usage("recorded", 1.0, 50)
+        subscription.billing_mode = "subscription"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [metered, subscription],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        self.assertEqual(stats.usage_entries, 2)
+        self.assertEqual(stats.total_tokens, 150)
+
+
+class GroupingDimensionTests(unittest.TestCase):
+    """Phase 3C: per-project and per-session grouping in analysis and terminal."""
+
+    @staticmethod
+    def _usage(project_id=None, session_id=None, tokens=100, cost=1.0):
+        return app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            input_tokens=tokens, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=tokens, cost=cost,
+            cost_breakdown={"total": cost}, provider="openai",
+            cost_status="recorded", project_id=project_id, session_id=session_id,
+            model_requests=1, model_turns=1, model_tool_calls=0,
+        )
+
+    @staticmethod
+    def _bucket(*buckets):
+        return {
+            "cache_read": 0, "cache_write": 0, "cost": sum(b[1] for b in buckets),
+            "input": sum(b[0] for b in buckets), "model_requests": len(buckets),
+            "model_tool_calls": 0, "model_turns": len(buckets), "output": 0,
+        }
+
+    @staticmethod
+    def _report(stats):
+        period = date(2026, 8, 1)
+        return app.AnalysisReport(
+            start_date=period, end_date=period, period_label="1d",
+            agent_stats={"pi": stats},
+            agent_displays={"pi": models.AgentDisplay(period, period, "1d")},
+        )
+
+    def test_project_and_session_breakdowns_group_by_attribute(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage(project_id="/repo/a", session_id="s1", tokens=10, cost=0.1),
+                self._usage(project_id="/repo/a", session_id="s2", tokens=20, cost=0.2),
+                self._usage(project_id="/repo/b", session_id="s3", tokens=30, cost=0.3),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        self.assertEqual(stats.project_breakdown, {
+            "/repo/a": self._bucket((10, 0.1), (20, 0.2)),
+            "/repo/b": self._bucket((30, 0.3)),
+        })
+        self.assertEqual(stats.session_breakdown, {
+            "s1": self._bucket((10, 0.1)),
+            "s2": self._bucket((20, 0.2)),
+            "s3": self._bucket((30, 0.3)),
+        })
+
+    def test_unattributed_rows_fall_into_unknown_bucket(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage(), self._usage()],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        self.assertEqual(list(stats.project_breakdown), ["unknown"])
+        self.assertEqual(list(stats.session_breakdown), ["unknown"])
+        self.assertEqual(stats.project_breakdown["unknown"]["input"], 200)
+
+    def test_terminal_shows_grouping_sections_and_unattributed_note(self):
+        attributed = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage(project_id="/repo/a", session_id="s1")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._report(attributed), "pi")
+        terminal = output.getvalue()
+        self.assertIn("BREAKDOWN BY SESSION", terminal)
+        self.assertIn("s1:", terminal)
+        self.assertIn("BREAKDOWN BY PROJECT", terminal)
+        self.assertIn("/repo/a:", terminal)
+
+        unattributed = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage()],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._report(unattributed), "pi")
+        terminal = output.getvalue()
+        self.assertIn("No session attribution available.", terminal)
+        self.assertIn("No project attribution available.", terminal)
+
 
 class DisplayPeriodTests(unittest.TestCase):
     """Direct coverage for UsageAnalyzer.display_period (all-time branches)."""
@@ -890,6 +1227,123 @@ class DateRangeTests(unittest.TestCase):
                         expected = list(agents) if selected_agent == "all" else [selected_agent]
                         self.assertEqual(report["agents_analyzed"], expected)
 
+    def test_simulated_cli_selectors_filter_report(self):
+        def entries():
+            return [
+                app.UsageEntry(
+                    agent="pi", model_id="model-a", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=10, cost=1.0,
+                    cost_breakdown={"total": 1.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model-b", timestamp="2026-08-02T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=20, cost=2.0,
+                    cost_breakdown={"total": 2.0}, cost_status="recorded",
+                    provider="anthropic",
+                ),
+            ]
+
+        def fake_sources(agent, home=None):
+            return [Source(f"{agent}:fake", "fingerprint-1", "1", entries)]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            patches = (
+                patch.object(app, "detect_agents", return_value=["pi"]),
+                patch.object(app, "collect_sources", side_effect=fake_sources),
+                patch.object(app, "PricingResolver", return_value=resolver),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+            )
+            with patches[0], patches[1], patches[2], patches[3]:
+                cases = (
+                    (("--model", "model-a"), 10),
+                    (("--provider", "anthropic"), 20),
+                    (("--model", "model-a", "--provider", "openai"), 10),
+                    (("--model", "model-b", "--provider", "openai"), 0),
+                    # Recorded cost flips policy billing to metered, so the
+                    # post-pricing hook excludes these rows for 'unknown'.
+                    (("--billing-mode", "metered"), 30),
+                    (("--billing-mode", "unknown"), 0),
+                )
+                for index, (selector, expected_total) in enumerate(cases):
+                    output_path = root / f"{index}.json"
+                    with patch("sys.argv", [
+                        "eurysx", "--agent", "pi", *selector,
+                        "--output", str(output_path),
+                    ]), redirect_stdout(io.StringIO()):
+                        app.main()
+                    report = json.loads(output_path.read_text())
+                    self.assertEqual(
+                        report["agent_stats"]["pi"]["total_tokens"], expected_total
+                    )
+
+    def test_previous_window_same_length_before_current(self):
+        cases = [
+            (date(2026, 8, 1), date(2026, 8, 3), (date(2026, 7, 29), date(2026, 7, 31))),
+            (None, date(2026, 8, 3), (None, None)),
+            (date(2026, 2, 1), date(2026, 2, 28), (date(2026, 1, 4), date(2026, 1, 31))),
+            (date(2026, 8, 3), date(2026, 8, 3), (date(2026, 8, 2), date(2026, 8, 2))),
+        ]
+        for start, end, expected in cases:
+            with self.subTest(start=start):
+                self.assertEqual(app._previous_window(start, end), expected)
+
+    def test_simulated_cli_period_comparison_uses_previous_window(self):
+        def entries():
+            return [
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-07-31T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=40, cost=4.0,
+                    cost_breakdown={"total": 4.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=100, cost=1.0,
+                    cost_breakdown={"total": 1.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+            ]
+
+        def fake_sources(agent, home=None):
+            return [Source(f"{agent}:fake", "fingerprint-1", "1", entries)]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            patches = (
+                patch.object(app, "detect_agents", return_value=["pi"]),
+                patch.object(app, "collect_sources", side_effect=fake_sources),
+                patch.object(app, "PricingResolver", return_value=resolver),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+            )
+            output_path = root / "report.json"
+            terminal = io.StringIO()
+            with patches[0], patches[1], patches[2], patches[3], \
+                    patch("sys.argv", [
+                        "eurysx", "--agent", "pi",
+                        "--from", "2026-08-01", "--to", "2026-08-01",
+                        "--output", str(output_path),
+                    ]), redirect_stdout(terminal):
+                app.main()
+            report = json.loads(output_path.read_text())
+            comparison = report["period_comparison"]["pi"]
+            terminal_text = terminal.getvalue()
+
+        self.assertEqual(comparison["current"]["total_tokens"], 100)
+        self.assertEqual(comparison["previous"]["total_tokens"], 40)
+        self.assertEqual(comparison["current"]["known_cost"], 1.0)
+        self.assertEqual(comparison["previous"]["known_cost"], 4.0)
+        self.assertEqual(comparison["previous_period"], "2026-07-31 to 2026-07-31")
+        self.assertIn("PERIOD COMPARISON", terminal_text)
+        self.assertIn("+150%", terminal_text)  # (100 - 40) / 40
+
     def test_selected_ranges_exclude_claude_aggregate_and_warn(self):
         aggregate = app.UsageEntry(
             agent="claude-code", model_id="claude-sonnet-4", timestamp="2026-08-01",
@@ -899,11 +1353,24 @@ class DateRangeTests(unittest.TestCase):
         )
         stats = app.UsageAnalyzer.analyze_agent(
             "claude-code", [aggregate], date(2026, 8, 1), date(2026, 8, 3), "3d",
-            include_aggregated=False,
+            include_aggregated=False, aggregates_present=True,
         )
 
         self.assertEqual(stats.usage_entries, 0)
         self.assertTrue(stats.scope_warnings)
+
+    def test_aggregate_warning_absent_without_aggregates_present(self):
+        usage = app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            input_tokens=1, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=1, cost=0.0, cost_breakdown={},
+        )
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d",
+            include_aggregated=False, aggregates_present=False,
+        )
+
+        self.assertEqual(stats.scope_warnings, [])
 
     def test_json_report_excludes_claude_aggregate_for_selected_range(self):
         aggregate = app.UsageEntry(
@@ -939,15 +1406,16 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     """Pre-refactor baseline: locks the report shape Act III Phase 2 and 6 diff against."""
 
     TOP_LEVEL_KEYS = [
-        "agent_stats", "agents_analyzed", "analysis_period", "preferences", "pricing",
+        "agent_stats", "agents_analyzed", "analysis_period", "period_comparison",
+        "preferences", "pricing",
     ]
     AGENT_STATS_KEYS = [
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
         "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
         "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
-        "pricing_fetched_at", "pricing_sources", "quarterly_cost",
-        "route_breakdown", "scope_warnings",
+        "pricing_fetched_at", "pricing_sources", "project_breakdown",
+        "quarterly_cost", "route_breakdown", "scope_warnings", "session_breakdown",
         "sessions_count", "total_cache_read_tokens", "total_cache_write_tokens",
         "total_cost", "total_input_tokens", "total_output_tokens", "total_tokens",
         "unique_models", "unknown_cost_count", "unknown_cost_tokens", "usage_entries",
@@ -955,9 +1423,11 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     ]
     TERMINAL_SECTIONS = [
         "TOTAL USAGE (ALL MODELS)", "BREAKDOWN BY MODEL",
+        "BREAKDOWN BY SESSION", "BREAKDOWN BY PROJECT",
         "COST PROJECTIONS PER TIME PERIOD", "TOKEN VOLUME PER TIME PERIOD",
         "MODEL ACTIVITY VOLUME PER TIME PERIOD", "DAILY ACTIVITY",
         "SUMMARY STATISTICS", "CACHE EFFECTIVENESS", "COST ANALYSIS",
+        "PERIOD COMPARISON",
     ]
 
     EXPECTED_PI_STATS = {
@@ -1000,6 +1470,14 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "usage_entries": 1,
         "weekly_cost": 8.75,
         "yearly_cost": 456.25,
+        "project_breakdown": {"/repo/a": {
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
+        }},
+        "session_breakdown": {"s1": {
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
+        }},
     }
 
     def _run(self):
@@ -1130,7 +1608,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.4")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.5")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:

@@ -42,6 +42,29 @@ AGENT_NAMES = {
 }
 
 
+def _print_grouped_section(title: str, breakdown: Dict, attribution_noun: str):
+    """Terminal breakdown by session or project; 'unknown' bucket covers unattributed rows."""
+    print(f"\n{'=' * 80}")
+    print(title)
+    print('=' * 80)
+    if len(breakdown) == 1 and "unknown" in breakdown:
+        print(f"\nNo {attribution_noun} attribution available.")
+        return
+    rows = sorted(breakdown.items(), key=lambda item: item[1]['cost'], reverse=True)
+    for key, data in rows:
+        total = (data['input'] + data['output'] + data['cache_read'] + data['cache_write'])
+        print(f"\n{key}:")
+        print(f"  Input tokens:         {data['input']:>15,}")
+        print(f"  Output tokens:        {data['output']:>15,}")
+        print(f"  Cache read tokens:    {data['cache_read']:>15,}")
+        print(f"  Cache creation tokens:{data['cache_write']:>15,}")
+        print(f"  TOTAL TOKENS:         {total:>15,}")
+        print(f"  Known cost:           ${data['cost']:>14,.6f}")
+        print(f"  Model requests:       {data['model_requests']:>15,}")
+        print(f"  Model turns:          {data['model_turns']:>15,}")
+        print(f"  Model tool calls:     {data['model_tool_calls']:>15,}")
+
+
 def print_agent_header(agent: str, title: str = "USAGE ANALYSIS"):
     """Print color-coded agent header."""
     color = AGENT_COLORS.get(agent, Colors.reset)
@@ -110,6 +133,9 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         print(f"  Model requests:       {model_data['model_requests']:>15,}")
         print(f"  Model turns:          {model_data['model_turns']:>15,}")
         print(f"  Model tool calls:     {model_data['model_tool_calls']:>15,}")
+
+    _print_grouped_section("BREAKDOWN BY SESSION", stats.session_breakdown, "session")
+    _print_grouped_section("BREAKDOWN BY PROJECT", stats.project_breakdown, "project")
     
     # ===== COST PROJECTIONS PER TIME PERIOD =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -246,6 +272,40 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     )
     print("=" * 80)
     print(f"Model Pricing Source: {source_details}")
+    comparison = report.period_comparison.get(agent)
+    if not comparison:
+        return
+    print(f"\n{'=' * 80}")
+    print("PERIOD COMPARISON")
+    print("=" * 80)
+    current = comparison["current"]
+    previous = comparison["previous"]
+
+    def delta(current_value, previous_value):
+        if previous_value == 0:
+            return "n/a" if current_value == 0 else "new"
+        return f"{(current_value - previous_value) / previous_value * 100:+.0f}%"
+
+    def format_tokens(value):
+        return f"{value:,}"
+
+    def format_cost(value):
+        return f"${value:,.6f}"
+
+    rows = (
+        ("Total tokens", current["total_tokens"], previous["total_tokens"], format_tokens),
+        ("Known cost", current["known_cost"], previous["known_cost"], format_cost),
+        ("Usage entries", current["usage_entries"], previous["usage_entries"], format_tokens),
+        ("Model requests", current["model_requests"], previous["model_requests"], format_tokens),
+    )
+    print(f"\n{'':<18} {'Current':>20} {'Previous':>20} {'Δ':>10}")
+    print("-" * 70)
+    for label, current_value, previous_value, format_value in rows:
+        print(
+            f"{label:<18} {format_value(current_value):>20} "
+            f"{format_value(previous_value):>20} {delta(current_value, previous_value):>10}"
+        )
+    print(f"\n{comparison['current_period']} vs {comparison['previous_period']}")
 
 
 def print_summary_comparison(report: AnalysisReport):
@@ -326,6 +386,8 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "model_breakdown": stats.model_breakdown,
         "daily_activity": stats.daily_activity,
         "scope_warnings": stats.scope_warnings,
+        "project_breakdown": stats.project_breakdown,
+        "session_breakdown": stats.session_breakdown,
     }
 
 
@@ -344,4 +406,5 @@ def build_json_report(report: AnalysisReport) -> Dict:
             agent: _agent_stats_dict(stats)
             for agent, stats in report.agent_stats.items()
         },
+        "period_comparison": report.period_comparison,
     }
