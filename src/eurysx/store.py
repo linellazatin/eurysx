@@ -156,18 +156,33 @@ class UsageStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def events(self, agents=None, start_date=None, end_date=None):
+    def events(self, agents=None, start_date=None, end_date=None,
+               models=None, providers=None):
         """Filtered events; range mode mirrors filter_by_date_range semantics.
 
-        Rows outside any ISO filter on date-only rows are unreachable: the
-        claude-code stats-cache rows are the only date-only rows and they are
-        aggregate_usage, excluded by the event_type guard in range mode.
+        models/providers filter with additive WHERE conditions; providers
+        reads NULL provider rows as 'unknown', mirroring route-breakdown
+        labels. Rows outside any ISO filter on date-only rows are
+        unreachable: the claude-code stats-cache rows are the only date-only
+        rows and they are aggregate_usage, excluded by the event_type guard
+        in range mode.
         """
         agents = list(agents or [])
+        models = list(models or [])
+        providers = list(providers or [])
         conditions, parameters = [], []
         if agents:
             conditions.append("agent IN (" + ", ".join("?" for _ in agents) + ")")
             parameters.extend(agents)
+        if models:
+            conditions.append("model_id IN (" + ", ".join("?" for _ in models) + ")")
+            parameters.extend(models)
+        if providers:
+            conditions.append(
+                "COALESCE(provider, 'unknown') IN ("
+                + ", ".join("?" for _ in providers) + ")"
+            )
+            parameters.extend(providers)
         if start_date is not None:
             conditions.append("event_type != 'aggregate_usage'")
             conditions.append("timestamp >= ? AND timestamp < ?")

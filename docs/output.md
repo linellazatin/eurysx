@@ -1,6 +1,6 @@
 # Report output reference
 
-Applies to Eurysx v0.0.4. Two output forms: the terminal report and the JSON
+Applies to Eurysx v0.0.5. Two output forms: the terminal report and the JSON
 `--output` file. Both derive from the same structured analysis result, so the
 numbers they show match.
 
@@ -29,6 +29,11 @@ Per agent, in order:
    provenance trail.
 
 With more than one agent reported, a `COMPARISON SUMMARY` table follows.
+
+Filter selectors (`--model`, `--provider`, `--billing-mode`) narrow the rows
+entering analysis; they do not add fields or change the shapes documented
+below. An agent left with no matching rows prints `No usage data found` and,
+for `--output`, still appears in `agent_stats` with zeroed totals.
 
 Privacy: prompts, responses, file contents, tool arguments, and tool results
 are never persisted or printed. The report shows aggregate tokens, counts,

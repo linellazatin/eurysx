@@ -124,6 +124,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--to", dest="end_date", type=_iso_date, metavar="YYYY-MM-DD",
                         help="Inclusive end date; requires --from")
     parser.add_argument("--output", type=str, help="Save results to JSON")
+    parser.add_argument("--model", nargs="+",
+                        help="Only include usage for these model IDs")
+    parser.add_argument("--provider", nargs="+",
+                        help="Only include usage for these providers"
+                             " ('unknown' matches rows without a recorded provider)")
+    parser.add_argument("--billing-mode", nargs="+",
+                        choices=["metered", "subscription", "credit", "quota",
+                                 "local", "unknown"],
+                        help="Only include usage with these billing modes"
+                             " (applied after pricing: a recorded cost overrides policy)")
     parser.add_argument("--refresh-pricing", action="store_true",
                         help="Force refresh of enabled remote pricing sources")
     args = parser.parse_args(_promote_command_after_agent(argv))
@@ -255,7 +265,8 @@ def main(argv=None):
             file=sys.stderr,
         )
     store_agents = store.distinct_agents(read_agents)
-    for record in store.events(read_agents, start_date, end_date):
+    for record in store.events(read_agents, start_date, end_date,
+                               models=args.model, providers=args.provider):
         usage = _usage_from_store(record)
         agent_data.setdefault(usage.agent, []).append(usage)
     if agents_to_analyze:
@@ -295,6 +306,7 @@ def main(argv=None):
             agent, usages, start_date, end_date, period_label,
             include_aggregated=is_all_time,
             aggregates_present=not is_all_time and store.has_aggregate_events([agent]),
+            billing_modes=set(args.billing_mode) if args.billing_mode else None,
         )
         report.agent_stats[agent] = stats
         report.agent_displays[agent] = UsageAnalyzer.display_period(

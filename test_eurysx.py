@@ -446,6 +446,45 @@ class UsageStoreTests(unittest.TestCase):
             "events_project_id", "events_session_id",
         }.issubset(names))
 
+    def test_events_model_and_provider_filters_sql(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            pi_rows = [
+                app.UsageEntry(
+                    agent="pi", model_id="model-a", timestamp="2026-08-01T10:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model-b", timestamp="2026-08-01T11:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=1, cost=0.0,
+                    cost_breakdown={}, provider=None,
+                ),
+            ]
+            codex_row = app.UsageEntry(
+                agent="codex", model_id="model-a", timestamp="2026-08-01T12:00:00Z",
+                input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=1, cost=0.0,
+                cost_breakdown={}, provider=None,
+            )
+            store.replace_source("pi:one", "pi", "fp", pi_rows)
+            store.replace_source("codex:one", "codex", "fp", [codex_row])
+
+            ids = lambda records: sorted((r["agent"], r["model_id"]) for r in records)
+            self.assertEqual(ids(store.events(models=["model-a"])),
+                             [("codex", "model-a"), ("pi", "model-a")])
+            self.assertEqual(ids(store.events(providers=["openai"])),
+                             [("pi", "model-a")])
+            # NULL providers match 'unknown', mirroring route-breakdown labels.
+            self.assertEqual(ids(store.events(providers=["unknown"])),
+                             [("codex", "model-a"), ("pi", "model-b")])
+            combined = store.events(["pi"], date(2026, 8, 1), date(2026, 8, 1),
+                                    models=["model-a"], providers=["openai"])
+            self.assertEqual(ids(combined), [("pi", "model-a")])
+            self.assertEqual(store.events(models=["missing-model"]), [])
+
 
 class IncrementalCollectionTests(unittest.TestCase):
     def _entry(self):
@@ -1103,6 +1142,60 @@ class DateRangeTests(unittest.TestCase):
                         expected = list(agents) if selected_agent == "all" else [selected_agent]
                         self.assertEqual(report["agents_analyzed"], expected)
 
+    def test_simulated_cli_selectors_filter_report(self):
+        def entries():
+            return [
+                app.UsageEntry(
+                    agent="pi", model_id="model-a", timestamp="2026-08-01T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=10, cost=1.0,
+                    cost_breakdown={"total": 1.0}, cost_status="recorded",
+                    provider="openai",
+                ),
+                app.UsageEntry(
+                    agent="pi", model_id="model-b", timestamp="2026-08-02T12:00:00Z",
+                    input_tokens=1, output_tokens=0, cache_read_tokens=0,
+                    cache_write_tokens=0, total_tokens=20, cost=2.0,
+                    cost_breakdown={"total": 2.0}, cost_status="recorded",
+                    provider="anthropic",
+                ),
+            ]
+
+        def fake_sources(agent, home=None):
+            return [Source(f"{agent}:fake", "fingerprint-1", "1", entries)]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            patches = (
+                patch.object(app, "detect_agents", return_value=["pi"]),
+                patch.object(app, "collect_sources", side_effect=fake_sources),
+                patch.object(app, "PricingResolver", return_value=resolver),
+                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+            )
+            with patches[0], patches[1], patches[2], patches[3]:
+                cases = (
+                    (("--model", "model-a"), 10),
+                    (("--provider", "anthropic"), 20),
+                    (("--model", "model-a", "--provider", "openai"), 10),
+                    (("--model", "model-b", "--provider", "openai"), 0),
+                    # Recorded cost flips policy billing to metered, so the
+                    # post-pricing hook excludes these rows for 'unknown'.
+                    (("--billing-mode", "metered"), 30),
+                    (("--billing-mode", "unknown"), 0),
+                )
+                for index, (selector, expected_total) in enumerate(cases):
+                    output_path = root / f"{index}.json"
+                    with patch("sys.argv", [
+                        "eurysx", "--agent", "pi", *selector,
+                        "--output", str(output_path),
+                    ]), redirect_stdout(io.StringIO()):
+                        app.main()
+                    report = json.loads(output_path.read_text())
+                    self.assertEqual(
+                        report["agent_stats"]["pi"]["total_tokens"], expected_total
+                    )
+
     def test_selected_ranges_exclude_claude_aggregate_and_warn(self):
         aggregate = app.UsageEntry(
             agent="claude-code", model_id="claude-sonnet-4", timestamp="2026-08-01",
@@ -1356,7 +1449,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.4")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.5")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:
