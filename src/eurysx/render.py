@@ -142,11 +142,15 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}COST PROJECTIONS PER TIME PERIOD{Colors.reset}")
     print(f"{color}{'=' * 80}{Colors.reset}")
     
-    days_active = len(stats.daily_activity) if stats.daily_activity else 1
+    days_active = len(stats.daily_activity)
     total_days = (display.end_date - display.start_date).days + 1
-    
+    # Aggregate-only agents (claude-code) have no per-day rows: say so instead
+    # of repeating the across-all-days figure under an "active days" label.
+    active_cost = f"${stats.total_cost / days_active:,.6f}" if days_active else "n/a"
+    active_tokens = f"{stats.total_tokens / days_active:,.0f}" if days_active else "n/a"
+
     print(f"\nDaily (across all {total_days} days):        ${stats.daily_cost:>14,.6f}")
-    print(f"Daily (active days only, {days_active} days): ${stats.daily_cost if days_active > 0 else 0:>14,.6f}")
+    print(f"Daily (active days only, {days_active} days): {active_cost:>15}")
     print(f"Weekly (across {total_days/7:.1f} weeks):            ${stats.weekly_cost:>14,.6f}")
     print(f"Monthly (30-day avg, {total_days/30:.1f} months):      ${stats.monthly_cost:>14,.6f}")
     print(f"Quarterly (90-day avg, {total_days/90:.1f} quarters): ${stats.quarterly_cost:>14,.6f}")
@@ -164,7 +168,7 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     token_yearly = token_daily_avg * 365
     
     print(f"\nDaily (across all days):     {token_daily_avg:>15,.0f} tokens")
-    print(f"Daily (active days only):    {token_daily_avg:>15,.0f} tokens")
+    print(f"Daily (active days only):    {active_tokens:>15} tokens")
     print(f"Weekly:                      {token_weekly:>15,.0f} tokens")
     print(f"Monthly (30-day avg):        {token_monthly:>15,.0f} tokens")
     print(f"Quarterly (90-day avg):      {token_quarterly:>15,.0f} tokens")
@@ -198,6 +202,17 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
             f"{activity_daily['tool_calls'] * multiplier:>15,.0f}"
         )
 
+    ratios = []
+    if stats.requests_per_turn is not None:
+        ratios.append(f"requests/turn: {stats.requests_per_turn:.2f}")
+    if stats.tool_calls_per_request is not None:
+        ratios.append(f"tool calls/request: {stats.tool_calls_per_request:.2f}")
+    if stats.tool_calls_per_turn is not None:
+        ratios.append(f"tool calls/turn: {stats.tool_calls_per_turn:.2f}")
+    print(
+        f"\nRatios: {', '.join(ratios) if ratios else 'N/A (no request, turn, or tool rows in scope)'}"
+    )
+
     # ===== DAILY ACTIVITY =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
     print(f"{color}DAILY ACTIVITY{Colors.reset}")
@@ -217,7 +232,8 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}SUMMARY STATISTICS{Colors.reset}")
     print(f"{color}{'=' * 80}{Colors.reset}")
     
-    print(f"\nTotal sessions: {stats.sessions_count}")
+    print(f"\nTotal sessions: {stats.sessions_count}"
+          + (" attributed (+ unattributed rows)" if "unknown" in stats.session_breakdown else ""))
     print(f"Total messages (usage entries): {stats.usage_entries}")
     print(f"Unique models used: {len(stats.unique_models)}")
     
@@ -368,6 +384,9 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "priced_token_coverage": stats.priced_token_coverage,
         "cache_read_ratio": stats.cache_read_ratio,
         "cache_efficiency_ratio": stats.cache_efficiency_ratio,
+        "requests_per_turn": stats.requests_per_turn,
+        "tool_calls_per_request": stats.tool_calls_per_request,
+        "tool_calls_per_turn": stats.tool_calls_per_turn,
         "metered_tokens": stats.metered_tokens,
         "non_metered_tokens": stats.non_metered_tokens,
         "billing_mode_tokens": stats.billing_mode_tokens,

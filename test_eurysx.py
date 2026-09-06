@@ -127,6 +127,22 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertEqual(sum(item.model_turns for item in usages), 1)
         self.assertEqual(sum(item.model_tool_calls for item in usages), 1)
 
+    def test_pi_falls_back_to_legacy_per_event_session_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session_dir = root / ".pi" / "agent" / "sessions" / "project"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.jsonl").write_text(
+                '{"id":"a","type":"message","timestamp":"2026-08-01T13:00:00Z",'
+                '"sessionId":"legacy-1","message":{"role":"assistant",'
+                '"model":"m","provider":"openai","usage":{"input":1,"output":1,'
+                '"cacheRead":0,"cacheWrite":0,"totalTokens":2}}}\n'
+            )
+
+            usages = pi_collector.collect(root)
+
+        self.assertEqual([usage.session_id for usage in usages], ["legacy-1"])
+
     def test_opencode_database_normalizes_usage_metrics_and_session_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -243,7 +259,7 @@ class UsageStoreTests(unittest.TestCase):
             with patch("sys.argv", ["eurysx", "report", "--agent", "codex", "--output", str(output)]), \
                     patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
                     patch.object(app, "collect_sources", side_effect=AssertionError), \
-                    redirect_stdout(io.StringIO()):
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 app.main()
             report = json.loads(output.read_text())
 
@@ -499,7 +515,7 @@ class IncrementalCollectionTests(unittest.TestCase):
         with patch.object(app, "UsageStore", return_value=store), \
                 patch.object(app, "collect_sources", side_effect=lambda agent, home=None: sources), \
                 patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
-                redirect_stdout(io.StringIO()):
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             app.main(["collect", "--agent", "pi"])
 
     def test_unchanged_source_skips_reparse_until_fingerprint_or_parser_version_changes(self):
@@ -551,6 +567,34 @@ class IncrementalCollectionTests(unittest.TestCase):
         self.assertEqual(state["fingerprint"], "fp-a")
         self.assertIn("source vanished", state["last_error"])
         self.assertIn("last refresh failed for pi:one", warning)
+
+    def test_report_warns_about_sources_still_on_an_older_parser(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            store.replace_source("pi:one", "pi", "fp-a", [self._entry()],
+                                 parser_version="0")
+            warning = self._report(root, store)
+        self.assertIn(
+            f"still on parser v0 (current v{app.PARSER_VERSIONS['pi']})", warning
+        )
+        self.assertIn("eurysx collect", warning)
+
+    def test_report_warns_about_sources_that_no_longer_exist_on_disk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            live = root / "session.jsonl"
+            live.write_text("{}\n")
+            current = app.PARSER_VERSIONS["pi"]
+            store.replace_source(f"pi:{live}", "pi", "fp-a", [self._entry()],
+                                 parser_version=current)
+            store.replace_source(f"pi:{root / 'gone.jsonl'}", "pi", "fp-b",
+                                 [self._entry()], parser_version=current)
+            warning = self._report(root, store)
+        self.assertIn("1 pi stored source(s) no longer exist on disk", warning)
+        self.assertIn("retained as last-good data", warning)
+        self.assertNotIn("still on parser", warning)
 
     def test_fingerprint_is_stable_and_tracks_file_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1033,6 +1077,107 @@ class DisplayPeriodTests(unittest.TestCase):
         )
 
 
+class AggregateTimestampTests(unittest.TestCase):
+    """Date-only stats-cache stamps still drive rates and period pinning."""
+
+    @staticmethod
+    def _aggregate(timestamp="2026-08-01"):
+        return app.UsageEntry(
+            agent="claude-code", model_id="model", timestamp=timestamp,
+            input_tokens=10, output_tokens=20, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=30, cost=1.5,
+            cost_breakdown={"total": 1.5}, provider="anthropic",
+            cost_status="recorded", is_aggregated=True, model_requests=1,
+        )
+
+    def test_date_only_timestamp_parses(self):
+        self.assertEqual(
+            app.UsageAnalyzer.extract_date_from_timestamp("2026-08-01"),
+            date(2026, 8, 1),
+        )
+
+    def test_all_time_aggregate_gets_rates_without_daily_rows(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "claude-code", [self._aggregate()],
+            None, date(2026, 8, 31), "ALL TIME",
+        )
+        self.assertEqual(stats.daily_activity, {})
+        self.assertEqual(stats.daily_cost, 1.5 / 31)
+        self.assertEqual(stats.yearly_cost, 1.5 / 31 * 365)
+
+    def test_all_time_period_pins_to_date_only_timestamp(self):
+        display = app.UsageAnalyzer.display_period(
+            [self._aggregate()], None, date(2026, 8, 31), "ALL TIME", True,
+        )
+        self.assertEqual(display.start_date, date(2026, 8, 1))
+
+    def test_terminal_marks_active_day_rates_as_not_applicable_without_daily_rows(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "claude-code", [self._aggregate()],
+            None, date(2026, 8, 31), "ALL TIME",
+        )
+        report = app.AnalysisReport(
+            start_date=None, end_date=date(2026, 8, 31), period_label="ALL TIME",
+            agent_stats={"claude-code": stats},
+            agent_displays={"claude-code": models.AgentDisplay(
+                date(2026, 8, 1), date(2026, 8, 31), "ALL TIME (data from 2026-08-01)")},
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(report, "claude-code")
+        terminal = output.getvalue()
+        self.assertIn("Daily (active days only, 0 days):", terminal)
+        self.assertIn("n/a", terminal)
+        self.assertIn("No daily activity data available.", terminal)
+
+
+class ActivityRatioTests(unittest.TestCase):
+    """Phase 4.1: request/turn/tool ratios, including the metric-row split."""
+
+    @staticmethod
+    def _usage(requests=0, turns=0, tool_calls=0, metric_only=False):
+        return app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-08-01T00:00:00Z",
+            input_tokens=10, output_tokens=0, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=10, cost=0.0,
+            cost_breakdown={}, provider="openai", cost_status="not_applicable",
+            is_metric_only=metric_only, model_requests=requests,
+            model_turns=turns, model_tool_calls=tool_calls,
+        )
+
+    @staticmethod
+    def _analyze(entries):
+        return app.UsageAnalyzer.analyze_agent(
+            "pi", entries, date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+    def test_ratios_divide_across_usage_and_metric_rows(self):
+        stats = self._analyze([
+            self._usage(requests=2), self._usage(turns=1, tool_calls=6, metric_only=True),
+        ])
+        self.assertEqual(stats.requests_per_turn, 2.0)
+        self.assertEqual(stats.tool_calls_per_request, 3.0)
+        self.assertEqual(stats.tool_calls_per_turn, 6.0)
+
+    def test_ratios_stay_none_without_activity_rows(self):
+        stats = self._analyze([self._usage()])
+        self.assertEqual(
+            (stats.requests_per_turn, stats.tool_calls_per_request,
+             stats.tool_calls_per_turn), (None, None, None),
+        )
+        report = app.AnalysisReport(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 1), period_label="1d",
+            agent_stats={"pi": stats},
+            agent_displays={"pi": models.AgentDisplay(
+                date(2026, 8, 1), date(2026, 8, 1), "1d")},
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(report, "pi")
+        self.assertIn("Ratios: N/A (no request, turn, or tool rows in scope)",
+                      output.getvalue())
+
+
 class PreferencesTests(unittest.TestCase):
     @staticmethod
     def _usage(provider="openai", model="gpt-5.6"):
@@ -1221,7 +1366,7 @@ class DateRangeTests(unittest.TestCase):
                         with patch("sys.argv", [
                             "eurysx", "--agent", selected_agent, *period,
                             "--output", str(output_path),
-                        ]), redirect_stdout(io.StringIO()):
+                        ]), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                             app.main()
                         report = json.loads(output_path.read_text())
                         expected = list(agents) if selected_agent == "all" else [selected_agent]
@@ -1274,7 +1419,7 @@ class DateRangeTests(unittest.TestCase):
                     with patch("sys.argv", [
                         "eurysx", "--agent", "pi", *selector,
                         "--output", str(output_path),
-                    ]), redirect_stdout(io.StringIO()):
+                    ]), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                         app.main()
                     report = json.loads(output_path.read_text())
                     self.assertEqual(
@@ -1415,11 +1560,13 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
         "pricing_fetched_at", "pricing_sources", "project_breakdown",
-        "quarterly_cost", "route_breakdown", "scope_warnings", "session_breakdown",
-        "sessions_count", "total_cache_read_tokens", "total_cache_write_tokens",
-        "total_cost", "total_input_tokens", "total_output_tokens", "total_tokens",
-        "unique_models", "unknown_cost_count", "unknown_cost_tokens", "usage_entries",
-        "weekly_cost", "yearly_cost",
+        "quarterly_cost", "requests_per_turn", "route_breakdown", "scope_warnings",
+        "session_breakdown", "sessions_count", "tool_calls_per_request",
+        "tool_calls_per_turn", "total_cache_read_tokens",
+        "total_cache_write_tokens", "total_cost", "total_input_tokens",
+        "total_output_tokens", "total_tokens", "unique_models",
+        "unknown_cost_count",
+        "unknown_cost_tokens", "usage_entries", "weekly_cost", "yearly_cost",
     ]
     TERMINAL_SECTIONS = [
         "TOTAL USAGE (ALL MODELS)", "BREAKDOWN BY MODEL",
@@ -1452,6 +1599,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "pricing_fetched_at": {},
         "pricing_sources": ["recorded"],
         "quarterly_cost": 112.5,
+        "requests_per_turn": 1.0,
         "route_breakdown": {"openai/model [metered]": {
             "cost": 1.25, "entries": 1, "model_requests": 1,
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
@@ -1463,6 +1611,8 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "total_cost": 1.25,
         "total_input_tokens": 10,
         "total_output_tokens": 20,
+        "tool_calls_per_request": 0.0,
+        "tool_calls_per_turn": 0.0,
         "total_tokens": 100,
         "unique_models": ["model"],
         "unknown_cost_count": 0,
@@ -1511,6 +1661,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
                 patch.object(app, "PricingResolver", return_value=pricing),
                 patch.object(app, "PreferencesResolver", return_value=prefs),
                 redirect_stdout(terminal),
+                redirect_stderr(io.StringIO()),
             ):
                 app.main()
             return json.loads(output_path.read_text()), terminal.getvalue()
@@ -1608,7 +1759,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.5")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.0.6")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:

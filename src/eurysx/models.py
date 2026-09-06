@@ -73,6 +73,9 @@ class AgentStats:
     priced_token_coverage: Optional[float] = None
     cache_read_ratio: Optional[float] = None
     cache_efficiency_ratio: Optional[float] = None
+    requests_per_turn: Optional[float] = None
+    tool_calls_per_request: Optional[float] = None
+    tool_calls_per_turn: Optional[float] = None
     metered_tokens: int = 0
     non_metered_tokens: Dict[str, int] = None
     billing_mode_tokens: Dict[str, int] = None

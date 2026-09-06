@@ -22,14 +22,17 @@ class UsageAnalyzer:
     
     @staticmethod
     def extract_date_from_timestamp(timestamp: str) -> Optional[datetime.date]:
-        """Extract date from ISO timestamp or epoch timestamp."""
+        """Extract date from an ISO timestamp, a date-only stamp (the
+        claude-code stats cache records `lastComputedDate` as `YYYY-MM-DD`),
+        or an epoch-millis timestamp."""
         try:
             if 'T' in timestamp:
                 date_str = timestamp.split('T')[0]
                 return datetime.strptime(date_str, '%Y-%m-%d').date()
             elif timestamp.isdigit():
                 return datetime.fromtimestamp(int(timestamp) / 1000).date()
-        except (ValueError, IndexError):
+            return datetime.strptime(timestamp, '%Y-%m-%d').date()
+        except (ValueError, TypeError, IndexError):
             pass
         return None
 
@@ -187,11 +190,14 @@ class UsageAnalyzer:
                 stats.known_cost += usage.cost
                 stats.total_cost += usage.cost
             
-            date = UsageAnalyzer.extract_date_from_timestamp(usage.timestamp)
-            if date:
-                date_str = date.strftime('%Y-%m-%d')
-                daily_tokens[date_str]['tokens'] += usage.total_tokens
-                daily_tokens[date_str]['cost'] += usage.cost
+            # Aggregate rows cover all recorded history on a single stamp, so
+            # they must not land in a per-day trend bucket.
+            if not usage.is_aggregated:
+                usage_date = UsageAnalyzer.extract_date_from_timestamp(usage.timestamp)
+                if usage_date:
+                    date_str = usage_date.strftime('%Y-%m-%d')
+                    daily_tokens[date_str]['tokens'] += usage.total_tokens
+                    daily_tokens[date_str]['cost'] += usage.cost
         
         stats.sessions_count = len(sessions)
         stats.model_breakdown = dict(model_tokens)
@@ -209,6 +215,19 @@ class UsageAnalyzer:
         if stats.total_cache_read_tokens > 0 and stats.total_cache_write_tokens > 0:
             stats.cache_efficiency_ratio = (
                 stats.total_cache_read_tokens / stats.total_cache_write_tokens
+            )
+        # Denominators of zero stay None (not 0.0): a ranged Claude Code report
+        # has no request/turn/tool rows at all, which is unknown, not infinite.
+        if stats.total_model_turns:
+            stats.requests_per_turn = (
+                stats.total_model_requests / stats.total_model_turns
+            )
+            stats.tool_calls_per_turn = (
+                stats.total_model_tool_calls / stats.total_model_turns
+            )
+        if stats.total_model_requests:
+            stats.tool_calls_per_request = (
+                stats.total_model_tool_calls / stats.total_model_requests
             )
         
         rate_start_date = start_date

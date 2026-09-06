@@ -14,6 +14,14 @@ SOURCES = {
     "codex": codex.enumerate_sources,
 }
 
+# Current parser per agent, so the CLI can flag stored rows that predate a bump.
+PARSER_VERSIONS = {
+    "claude-code": claude_code.PARSER_VERSION,
+    "opencode": opencode.PARSER_VERSION,
+    "pi": pi.PARSER_VERSION,
+    "codex": codex.PARSER_VERSION,
+}
+
 
 def detect_agents(home: Optional[Path] = None) -> List[str]:
     checks = {

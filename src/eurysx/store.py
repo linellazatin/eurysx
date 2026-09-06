@@ -156,6 +156,15 @@ class UsageStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def all_sources(self):
+        """Every registered source, for the read-only store-quality warnings."""
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT source_key, agent, parser_version FROM sources"
+                " ORDER BY agent, source_key"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def events(self, agents=None, start_date=None, end_date=None,
                models=None, providers=None):
         """Filtered events; range mode mirrors filter_by_date_range semantics.

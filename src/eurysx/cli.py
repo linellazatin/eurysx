@@ -5,11 +5,12 @@ import json
 import re
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .analysis import UsageAnalyzer
-from .collectors import collect_sources, detect_agents
+from .collectors import PARSER_VERSIONS, collect_sources, detect_agents
 from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
@@ -202,6 +203,40 @@ def _previous_window(start_date, end_date):
     return previous_end - timedelta(days=span - 1), previous_end
 
 
+def _warn_store_quality(store):
+    """Read-only visibility for retained data the current build cannot re-derive.
+
+    Neither warning mutates the store: retention is deliberate (Act II Phase 3),
+    and deleting events on an absent harness directory would destroy history.
+    `doctor` (Act III Phase 5) owns the per-source detail view.
+    """
+    stale = {}
+    vanished = {}
+    for row in store.all_sources():
+        agent = row["agent"]
+        current = PARSER_VERSIONS.get(agent)
+        if current and row["parser_version"] != current:
+            stale[(agent, row["parser_version"], current)] = \
+                stale.get((agent, row["parser_version"], current), 0) + 1
+        path = row["source_key"].split(":", 1)[-1]
+        if not Path(path).exists():
+            vanished[agent] = vanished.get(agent, 0) + 1
+    for (agent, stored, current), count in sorted(stale.items()):
+        print(
+            f"Warning: {count} stored {agent} source(s) are still on parser "
+            f"v{stored} (current v{current}); run 'eurysx collect' so period "
+            "filters see them.",
+            file=sys.stderr,
+        )
+    if vanished:
+        detail = ", ".join(f"{count} {agent}" for agent, count in sorted(vanished.items()))
+        print(
+            f"Warning: {detail} stored source(s) no longer exist on disk; their "
+            "events are retained as last-good data.",
+            file=sys.stderr,
+        )
+
+
 def _refresh_store(store, agents):
     """Collect per raw source, skipping sources whose fingerprint and parser version are unchanged."""
     for agent in agents:
@@ -273,6 +308,7 @@ def main(argv=None):
             f"reporting last good data ({failure['last_error']}).",
             file=sys.stderr,
         )
+    _warn_store_quality(store)
     store_agents = store.distinct_agents(read_agents)
     for record in store.events(read_agents, start_date, end_date,
                                models=args.model, providers=args.provider):
