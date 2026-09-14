@@ -140,30 +140,38 @@ class UsageStore:
                 rows,
             )
 
-    def record_failure(self, source_key, error):
+    def record_failure(self, source, agent, error):
         """Record a failed refresh without removing usable prior events."""
         with self._connection() as connection:
             connection.execute(
-                "UPDATE sources SET last_error = ? WHERE source_key = ?",
-                (str(error), source_key),
+                """INSERT INTO sources
+                   (source_key, agent, fingerprint, parser_version, collected_at, last_error)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_key) DO UPDATE SET last_error=excluded.last_error""",
+                (source.key, agent, source.fingerprint, source.parser_version,
+                 datetime.now(timezone.utc).isoformat(), str(error)),
             )
 
-    def failing_sources(self):
+    def source_states(self, agents=None):
+        """Full persisted source state, optionally limited to agents."""
+        agents = list(agents or [])
+        query = ("SELECT source_key, agent, fingerprint, parser_version, collected_at, last_error "
+                 "FROM sources")
+        parameters = []
+        if agents:
+            query += " WHERE agent IN (" + ", ".join("?" for _ in agents) + ")"
+            parameters.extend(agents)
+        query += " ORDER BY agent, source_key"
         with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT source_key, last_error FROM sources"
-                " WHERE last_error IS NOT NULL ORDER BY source_key"
-            ).fetchall()
+            rows = connection.execute(query, parameters).fetchall()
         return [dict(row) for row in rows]
+
+    def failing_sources(self, agents=None):
+        return [row for row in self.source_states(agents) if row["last_error"] is not None]
 
     def all_sources(self):
         """Every registered source, for the read-only store-quality warnings."""
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT source_key, agent, parser_version FROM sources"
-                " ORDER BY agent, source_key"
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self.source_states()
 
     def events(self, agents=None, start_date=None, end_date=None,
                models=None, providers=None):

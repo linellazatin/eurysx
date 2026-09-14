@@ -91,7 +91,7 @@ def _promote_command_after_agent(argv):
             candidate = values[candidate_index]
             if candidate.startswith("-"):
                 break
-            if candidate in ("collect", "report"):
+            if candidate in ("collect", "report", "doctor"):
                 command = values.pop(candidate_index)
                 return [command, *values]
     return values
@@ -104,7 +104,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
-        "command", nargs="?", choices=("collect", "report"),
+        "command", nargs="?", choices=("collect", "report", "doctor"),
         help="collect metadata only, or report stored metadata only",
     )
     parser.add_argument(
@@ -237,6 +237,49 @@ def _warn_store_quality(store):
         )
 
 
+def _print_doctor(store, resolver, preferences):
+    """Print read-only local diagnostic state without parsing sources."""
+    detected = set(detect_agents())
+    print("DOCTOR")
+    print("\nDETECTED HARNESSES")
+    for agent in PARSER_VERSIONS:
+        print(f"{agent}: {'detected' if agent in detected else 'not detected'}")
+    descriptors = {}
+    for agent in detected:
+        try:
+            descriptors[agent] = {source.key: source for source in collect_sources(agent)}
+        except Exception as error:
+            descriptors[agent] = {}
+            print(f"Warning: could not inspect {agent} sources: {error}")
+    print("\nSTORED SOURCE HEALTH")
+    states = store.source_states()
+    if not states:
+        print("No stored sources.")
+    for index, row in enumerate(states, 1):
+        source = descriptors.get(row["agent"], {}).get(row["source_key"])
+        if source:
+            state = "unchanged" if source.fingerprint == row["fingerprint"] else "changed"
+        else:
+            path = Path(row["source_key"].split(":", 1)[-1])
+            state = "unreachable" if not path.exists() else "not collected"
+        parser = row["parser_version"]
+        current = PARSER_VERSIONS.get(row["agent"])
+        drift = f" parser v{parser}" + (f" (current v{current})" if current and parser != current else "")
+        error = f"; last error: {row['last_error']}" if row["last_error"] else ""
+        print(f"{row['agent']} source {index}: {state}; collected {row['collected_at']};{drift}{error}")
+    print("\nPRICING")
+    print(f"config: {resolver.config_path}")
+    for status in resolver.cache_status():
+        print(f"{status['source']}: {status['status']}" +
+              (f" ({status['fetched_at']})" if status["fetched_at"] else ""))
+    for warning in resolver.warnings:
+        print(f"Warning: {warning}")
+    print("\nPREFERENCES")
+    print(f"config: {preferences.config_path}")
+    for warning in preferences.warnings:
+        print(f"Warning: {warning}")
+
+
 def _refresh_store(store, agents):
     """Collect per raw source, skipping sources whose fingerprint and parser version are unchanged."""
     for agent in agents:
@@ -254,7 +297,7 @@ def _refresh_store(store, agents):
             try:
                 entries = source.parse()
             except Exception as error:
-                store.record_failure(source.key, error)
+                store.record_failure(source, agent, error)
                 failed += 1
                 print(f"  Refresh failed for {source.key}: {error}")
                 continue
@@ -269,6 +312,11 @@ def main(argv=None):
     args = parse_args(argv)
     if args.output:
         Colors.disable()
+
+    if args.command == "doctor":
+        store = UsageStore(get_eurysx_data_dir() / "eurysx.db")
+        _print_doctor(store, PricingResolver(inspect_only=True), PreferencesResolver())
+        return
 
     start_date, end_date, period_label = get_date_range(args)
     is_all_time = start_date is None
@@ -302,10 +350,13 @@ def main(argv=None):
         _refresh_store(store, agents_to_analyze)
         if args.command == "collect":
             return
-    for failure in store.failing_sources():
+    failures = {}
+    for failure in store.failing_sources(read_agents):
+        failures[failure["agent"]] = failures.get(failure["agent"], 0) + 1
+    for agent, count in sorted(failures.items()):
         print(
-            f"Warning: last refresh failed for {failure['source_key']}; "
-            f"reporting last good data ({failure['last_error']}).",
+            f"Warning: {agent} has last-good data from {count} source(s) "
+            "whose latest refresh failed.",
             file=sys.stderr,
         )
     _warn_store_quality(store)

@@ -52,7 +52,7 @@ class PricingResolver:
     SCHEMA_VERSION = 2
 
     def __init__(self, config_path: Optional[Path] = None, cache_dir: Optional[Path] = None,
-                 force_refresh: bool = False):
+                 force_refresh: bool = False, inspect_only: bool = False):
         default_config_dir, default_cache_dir = get_eurysx_dirs()
         self.config_path = config_path or default_config_dir / "pricing.jsonc"
         self.cache_dir = cache_dir or default_cache_dir
@@ -67,11 +67,37 @@ class PricingResolver:
                 self.config = load_jsonc(self.config_path)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self.warnings.append(f"pricing configuration ignored: {exc}")
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            self.warnings.append(f"pricing cache unavailable: {exc}")
-        self._load_configured_sources()
+        if not inspect_only:
+            try:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.warnings.append(f"pricing cache unavailable: {exc}")
+            self._load_configured_sources()
+
+    def cache_status(self):
+        """Read enabled pricing-cache metadata without fetching or writing."""
+        sources = self.config.get("sources", {}) if isinstance(self.config, dict) else {}
+        if not isinstance(sources, dict):
+            return []
+        statuses = []
+        for source, settings in sorted(sources.items()):
+            if not isinstance(settings, dict) or not settings.get("enabled"):
+                continue
+            path = self._cache_path(source)
+            try:
+                data = json.loads(path.read_text())
+                fetched_at = data.get("fetched_at")
+                status = "fresh" if self._cache_fresh(
+                    path, self._source_int(source, settings, "refreshDays", 7)
+                ) else "stale"
+                if data.get("schema_version") != self.SCHEMA_VERSION or not fetched_at:
+                    status = "invalid"
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                fetched_at = None
+                status = "missing" if not path.exists() else "invalid"
+            statuses.append({"source": source, "path": path, "fetched_at": fetched_at,
+                             "status": status})
+        return statuses
 
     @staticmethod
     def _key(provider: Optional[str], model_id: str) -> str:
