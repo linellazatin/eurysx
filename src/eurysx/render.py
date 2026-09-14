@@ -1,5 +1,7 @@
 """Report rendering: terminal presentation and the JSON export payload."""
 
+import csv
+import io
 import sys
 from typing import Dict
 
@@ -421,9 +423,33 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
     }
 
 
+def build_csv_report(report: AnalysisReport) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(("agent", "provider", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls"))
+    for agent, stats in sorted(report.agent_stats.items()):
+        for route, data in sorted(stats.route_breakdown.items()):
+            provider_model, mode = route.rsplit(" [", 1)
+            provider, model = provider_model.split("/", 1)
+            writer.writerow((agent, provider, model, mode[:-1], data["tokens"], data["cost"], data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"]))
+    return output.getvalue()
+
+
+def build_markdown_report(report: AnalysisReport) -> str:
+    lines = ["# Eurysx report", "", f"Period: {report.period_label}"]
+    for agent, stats in sorted(report.agent_stats.items()):
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Model | Billing mode | Tokens | Known cost |", "| --- | --- | --- | ---: | ---: |"]
+        for route, data in sorted(stats.route_breakdown.items()):
+            provider_model, mode = route.rsplit(" [", 1)
+            provider, model = provider_model.split("/", 1)
+            lines.append(f"| {provider} | {model} | {mode[:-1]} | {data['tokens']:,} | ${data['cost']:.6f} |")
+    return "\n".join(lines) + "\n"
+
+
 def build_json_report(report: AnalysisReport) -> Dict:
     """Assemble the JSON `--output` payload from a structured analysis result."""
     return {
+        "schema_version": 1,
         "analysis_period": {
             "start": str(report.start_date) if report.start_date else "ALL TIME",
             "end": str(report.end_date),

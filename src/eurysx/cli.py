@@ -15,7 +15,7 @@ from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
 from .render import (
-    Colors, build_json_report, print_agent_header,
+    Colors, build_csv_report, build_json_report, build_markdown_report, print_agent_header,
     print_single_agent_report, print_summary_comparison,
 )
 from .store import UsageStore
@@ -124,7 +124,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Inclusive start date")
     parser.add_argument("--to", dest="end_date", type=_iso_date, metavar="YYYY-MM-DD",
                         help="Inclusive end date; requires --from")
-    parser.add_argument("--output", type=str, help="Save results to JSON")
+    parser.add_argument("--output", type=str, help="Save results to a file")
+    parser.add_argument("--format", choices=("json", "csv", "markdown"), default="json",
+                        help="Output file format (default: json; requires --output)")
     parser.add_argument("--model", nargs="+",
                         help="Only include usage for these model IDs")
     parser.add_argument("--provider", nargs="+",
@@ -138,6 +140,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--refresh-pricing", action="store_true",
                         help="Force refresh of enabled remote pricing sources")
     args = parser.parse_args(_promote_command_after_agent(argv))
+    if args.format != "json" and not args.output:
+        parser.error("--format requires --output")
     if args.end_date and not args.start_date:
         parser.error("--to requires --from")
     if args.start_date and any((args.days, args.weeks, args.month, args.quarter,
@@ -454,7 +458,12 @@ def main(argv=None):
 
     if args.output:
         with open(args.output, "w") as output_file:
-            json.dump(build_json_report(report), output_file, indent=2)
+            if args.format == "json":
+                json.dump(build_json_report(report), output_file, indent=2)
+            elif args.format == "csv":
+                output_file.write(build_csv_report(report))
+            else:
+                output_file.write(build_markdown_report(report))
 
 
 if __name__ == "__main__":

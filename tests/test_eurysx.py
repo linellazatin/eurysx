@@ -1683,7 +1683,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
 
     TOP_LEVEL_KEYS = [
         "agent_stats", "agents_analyzed", "analysis_period", "period_comparison",
-        "preferences", "pricing",
+        "preferences", "pricing", "schema_version",
     ]
     AGENT_STATS_KEYS = sorted([
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
@@ -1807,6 +1807,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
 
     def test_json_values_are_the_locked_baseline(self):
         report, _ = self._run()
+        self.assertEqual(report["schema_version"], 1)
         self.assertEqual(report["agents_analyzed"], ["pi"])
         self.assertEqual(report["analysis_period"], {
             "start": "2026-08-01", "end": "2026-08-01",
