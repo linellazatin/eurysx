@@ -1884,6 +1884,19 @@ class SummaryOutputTests(unittest.TestCase):
         self.assertIn("Known Cost", output.getvalue())
 
 
+class ManualDriftTests(unittest.TestCase):
+    def test_manual_contract_terms_exist_in_source(self):
+        root = Path(__file__).parent.parent
+        cli = (root / "src" / "eurysx" / "cli.py").read_text()
+        render = (root / "src" / "eurysx" / "render.py").read_text()
+        manual = (root / "docs" / "manual.md").read_text()
+        for term in ("--agent", "--format", "--output", "doctor", "stored source(s) no longer exist on disk"):
+            self.assertIn(term, cli + manual)
+        for key in ("schema_version", "unresolved_routes", "pacing"):
+            self.assertIn(key, render)
+            self.assertIn(key, manual)
+
+
 class VersionTests(unittest.TestCase):
     def test_version_flags_print_the_current_version(self):
         for flag in ("--version", "-v"):
