@@ -3,7 +3,8 @@
   "schemaVersion": 2,
   "agents": {
     "claude-code": {
-      "billingMode": "unknown"
+      "billingMode": "unknown",
+      // Optional: {"usd": 100, "period": "month"}
     },
     "codex": {
       "providers": {

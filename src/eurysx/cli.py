@@ -418,6 +418,19 @@ def main(argv=None):
             aggregates_present=not is_all_time and store.has_aggregate_events([agent]),
             billing_modes=set(args.billing_mode) if args.billing_mode else None,
         )
+        providers = {usage.provider for usage in usages if usage.provider}
+        groups = preferences.budget_groups(agent, providers)
+        if groups:
+            stats.pacing = {}
+            for provider, budget in groups.items():
+                budget_start, budget_end = UsageAnalyzer.budget_period(budget["period"], datetime.now().date())
+                budget_usages = [_usage_from_store(record) for record in store.events([agent], budget_start, budget_end)]
+                apply_pricing(budget_usages, resolver, preferences)
+                if provider is None:
+                    budget_usages = [usage for usage in budget_usages if usage.provider not in groups]
+                else:
+                    budget_usages = [usage for usage in budget_usages if usage.provider == provider]
+                stats.pacing[provider or "agent"] = UsageAnalyzer.pacing(stats, budget_usages, budget, datetime.now().date())
         report.agent_stats[agent] = stats
         report.agent_displays[agent] = UsageAnalyzer.display_period(
             usages, start_date, end_date, period_label, is_all_time,

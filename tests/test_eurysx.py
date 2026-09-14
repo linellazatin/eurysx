@@ -742,6 +742,21 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(result["source"], "override")
         self.assertEqual(result["pricing"]["output"], 15)
 
+    def test_unresolved_metered_routes_are_reported_by_provider_and_model(self):
+        usage = app.UsageEntry(
+            agent="codex", model_id="unpriced", timestamp="2026-08-01T00:00:00Z",
+            input_tokens=10, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+            total_tokens=10, cost=0.0, cost_breakdown={}, provider="openai",
+        )
+        usage.billing_mode = "metered"
+        usage.cost_status = "unknown"
+        stats = app.UsageAnalyzer.analyze_agent(
+            "codex", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d"
+        )
+        self.assertEqual(stats.unresolved_routes[0]["provider"], "openai")
+        self.assertEqual(stats.unresolved_routes[0]["model"], "unpriced")
+        self.assertEqual(stats.unresolved_routes[0]["tokens"], 10)
+
     def test_unknown_provider_model_has_unknown_cost_status(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1189,6 +1204,39 @@ class AggregateTimestampTests(unittest.TestCase):
         self.assertIn("No daily activity data available.", terminal)
 
 
+class PacingTests(unittest.TestCase):
+    def test_monthly_pacing_uses_calendar_days_and_known_cost(self):
+        usage = app.UsageEntry(
+            agent="codex", model_id="model", timestamp="2026-09-10T00:00:00Z",
+            input_tokens=1, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+            total_tokens=1, cost=50.0, cost_breakdown={"total": 50.0},
+            provider="openai", billing_mode="metered", cost_status="recorded",
+        )
+        stats = app.UsageAnalyzer.analyze_agent(
+            "codex", [usage], date(2026, 9, 1), date(2026, 9, 10), "10d"
+        )
+        result = app.UsageAnalyzer.pacing(stats, [usage], {"usd": 100, "period": "month"}, date(2026, 9, 10))
+        self.assertEqual(result["period_start"], "2026-09-01")
+        self.assertEqual(result["period_end"], "2026-09-30")
+        self.assertEqual(result["remaining_usd"], 50.0)
+        self.assertEqual(result["status"], "ahead")
+
+    def test_pacing_is_unavailable_for_unknown_metered_cost(self):
+        usage = app.UsageEntry(
+            agent="codex", model_id="model", timestamp="2026-09-10T00:00:00Z",
+            input_tokens=1, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+            total_tokens=1, cost=0.0, cost_breakdown={}, billing_mode="metered",
+            cost_status="unknown",
+        )
+        stats = app.UsageAnalyzer.analyze_agent(
+            "codex", [usage], date(2026, 9, 1), date(2026, 9, 10), "10d"
+        )
+        self.assertEqual(
+            app.UsageAnalyzer.pacing(stats, [usage], {"usd": 100, "period": "month"}, date(2026, 9, 10)),
+            {"status": "unavailable", "reason": "unknown metered cost"},
+        )
+
+
 class ActivityRatioTests(unittest.TestCase):
     """Phase 4.1: request/turn/tool ratios, including the metric-row split."""
 
@@ -1324,6 +1372,31 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.billing_mode, "subscription")
         self.assertEqual(usage.cost_status, "not_applicable")
         self.assertEqual(usage.cost, 0.0)
+
+    def test_budget_provider_override_and_invalid_budget_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {
+                "codex": {"budget": {"usd": 100, "period": "month"},
+                          "providers": {"openai": {"budget": {"usd": 25, "period": "week"}},
+                                         "bad": {"budget": {"usd": -1, "period": "day"}}}},
+            }}))
+            preferences = app.PreferencesResolver(path)
+            self.assertEqual(preferences.budget_for("codex", "openai"),
+                             {"usd": 25.0, "period": "week"})
+            self.assertIsNone(preferences.budget_for("codex", "bad"))
+            self.assertTrue(preferences.warnings)
+
+    def test_budget_groups_replace_agent_budget_for_overridden_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {
+                "budget": {"usd": 100, "period": "month"},
+                "providers": {"openai": {"budget": {"usd": 25, "period": "week"}}},
+            }}}))
+            groups = app.PreferencesResolver(path).budget_groups("codex", {"openai", "bedrock"})
+        self.assertEqual(groups, {"openai": {"usd": 25.0, "period": "week"},
+                                  None: {"usd": 100.0, "period": "month"}})
 
     def test_invalid_provider_policy_emits_a_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1612,20 +1685,20 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "agent_stats", "agents_analyzed", "analysis_period", "period_comparison",
         "preferences", "pricing",
     ]
-    AGENT_STATS_KEYS = [
+    AGENT_STATS_KEYS = sorted([
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
         "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
         "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
         "pricing_fetched_at", "pricing_sources", "project_breakdown",
-        "quarterly_cost", "requests_per_turn", "route_breakdown", "scope_warnings",
+        "pacing", "quarterly_cost", "requests_per_turn", "route_breakdown", "scope_warnings",
         "session_breakdown", "sessions_count", "tool_calls_per_request",
         "tool_calls_per_turn", "total_cache_read_tokens",
         "total_cache_write_tokens", "total_cost", "total_input_tokens",
         "total_output_tokens", "total_tokens", "unique_models",
         "unknown_cost_count",
-        "unknown_cost_tokens", "usage_entries", "weekly_cost", "yearly_cost",
-    ]
+        "unknown_cost_tokens", "unresolved_routes", "usage_entries", "weekly_cost", "yearly_cost",
+    ])
     TERMINAL_SECTIONS = [
         "TOTAL USAGE (ALL MODELS)", "BREAKDOWN BY MODEL",
         "BREAKDOWN BY SESSION", "BREAKDOWN BY PROJECT",
@@ -1663,6 +1736,8 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
         }},
         "scope_warnings": [],
+        "unresolved_routes": [],
+        "pacing": {},
         "sessions_count": 1,
         "total_cache_read_tokens": 30,
         "total_cache_write_tokens": 40,

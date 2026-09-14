@@ -261,6 +261,15 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"Unknown metered-cost tokens:          {stats.unknown_cost_tokens:>15,}")
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
     print(f"Metered token coverage:                {coverage:>14}")
+    if stats.unresolved_routes:
+        print("Unresolved metered routes:")
+        for route in stats.unresolved_routes:
+            print(f"  {route['provider']}/{route['model']}: {route['tokens']:,} tokens")
+    for route, pacing in stats.pacing.items():
+        if pacing["status"] == "unavailable":
+            print(f"Budget pacing ({route}): unavailable ({pacing['reason']})")
+        else:
+            print(f"Budget pacing ({route}): {pacing['status']} (${pacing['spent_usd']:.2f} / ${pacing['budget_usd']:.2f})")
     for billing_mode, tokens in sorted(stats.non_metered_tokens.items()):
         print(f"{billing_mode.title()} tokens:                  {tokens:>15,}")
 
@@ -405,6 +414,8 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "model_breakdown": stats.model_breakdown,
         "daily_activity": stats.daily_activity,
         "scope_warnings": stats.scope_warnings,
+        "unresolved_routes": stats.unresolved_routes,
+        "pacing": stats.pacing,
         "project_breakdown": stats.project_breakdown,
         "session_breakdown": stats.session_breakdown,
     }

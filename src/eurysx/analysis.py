@@ -1,7 +1,7 @@
 """Date and usage aggregation."""
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from .models import AgentDisplay, AgentStats, UsageEntry
@@ -200,6 +200,15 @@ class UsageAnalyzer:
                     daily_tokens[date_str]['cost'] += usage.cost
         
         stats.sessions_count = len(sessions)
+        unresolved = {}
+        for usage in filtered_usages:
+            if usage.is_metric_only or usage.billing_mode != "metered" or usage.cost_status != "unknown":
+                continue
+            key = (usage.provider or "unknown", usage.model_id)
+            reason = "no enabled source" if not usage.pricing_sources else "no exact provider/model match"
+            item = unresolved.setdefault(key, {"provider": key[0], "model": key[1], "tokens": 0, "reason": reason})
+            item["tokens"] += usage.total_tokens
+        stats.unresolved_routes = list(unresolved.values())
         stats.model_breakdown = dict(model_tokens)
         stats.route_breakdown = dict(route_tokens)
         stats.project_breakdown = dict(project_tokens)
@@ -246,6 +255,40 @@ class UsageAnalyzer:
             stats.yearly_cost = stats.daily_cost * 365
         
         return stats
+
+    @staticmethod
+    def budget_period(period: str, today: date):
+        if period == "week":
+            start = today - timedelta(days=today.weekday())
+            return start, start + timedelta(days=6)
+        if period == "month":
+            start = today.replace(day=1)
+            return start, (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        if period == "quarter":
+            month = ((today.month - 1) // 3) * 3 + 1
+            start = today.replace(month=month, day=1)
+            return start, (start.replace(month=month + 3) if month < 10 else date(today.year + 1, 1, 1)) - timedelta(days=1)
+        return today.replace(month=1, day=1), today.replace(month=12, day=31)
+
+    @staticmethod
+    def pacing(stats: AgentStats, usages: List[UsageEntry], budget: Dict[str, Any], today: date):
+        """Calculate calendar-budget pacing only when metered cost is complete."""
+        if any(u.billing_mode == "metered" and u.cost_status == "unknown" for u in usages):
+            return {"status": "unavailable", "reason": "unknown metered cost"}
+        start, end = UsageAnalyzer.budget_period(budget["period"], today)
+        spent = sum(u.cost for u in usages if u.cost_status not in ("unknown", "not_applicable"))
+        total_days = (end - start).days + 1
+        elapsed_days = (today - start).days + 1
+        projected = spent / elapsed_days * total_days
+        expected = budget["usd"] * elapsed_days / total_days
+        status = "over_budget" if spent > budget["usd"] else "on_track" if spent <= expected else "ahead"
+        return {
+            "status": status, "budget_usd": budget["usd"], "spent_usd": spent,
+            "remaining_usd": max(0.0, budget["usd"] - spent),
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "elapsed_days": elapsed_days, "remaining_days": total_days - elapsed_days,
+            "projected_spend_usd": projected,
+        }
 
     @staticmethod
     def compare_periods(current: AgentStats, previous: AgentStats,

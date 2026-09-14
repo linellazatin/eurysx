@@ -389,6 +389,48 @@ class PreferencesResolver:
             if agent not in agents:
                 self._warn(f"preferences missing {agent}; using unknown defaults")
 
+    def budget_for(self, agent: str, provider: Optional[str] = None):
+        """Return a validated exact-route budget, if configured."""
+        agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
+        agent_config = agents.get(agent, {}) if isinstance(agents, dict) else {}
+        policy = agent_config if isinstance(agent_config, dict) else {}
+        providers = policy.get("providers", {})
+        if isinstance(providers, dict) and provider in providers and isinstance(providers[provider], dict):
+            policy = {**policy, **providers[provider]}
+        budget = policy.get("budget")
+        if budget is None:
+            return None
+        if not isinstance(budget, dict):
+            self._warn(f"preferences {agent}.budget must be an object")
+            return None
+        try:
+            usd = float(budget.get("usd"))
+        except (TypeError, ValueError):
+            usd = 0
+        period = budget.get("period")
+        if usd <= 0 or period not in {"week", "month", "quarter", "year"}:
+            self._warn(f"preferences {agent}.budget is invalid; pacing disabled")
+            return None
+        return {"usd": usd, "period": period}
+
+    def budget_groups(self, agent: str, providers):
+        """Group provider budgets, with explicit provider budgets replacing agent budget."""
+        agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
+        policy = agents.get(agent, {}) if isinstance(agents, dict) else {}
+        provider_policies = policy.get("providers", {}) if isinstance(policy, dict) else {}
+        groups = {}
+        remaining = set(providers)
+        for provider in sorted(remaining):
+            if isinstance(provider_policies, dict) and isinstance(provider_policies.get(provider), dict) and "budget" in provider_policies[provider]:
+                budget = self.budget_for(agent, provider)
+                if budget:
+                    groups[provider] = budget
+                remaining.discard(provider)
+        budget = self.budget_for(agent)
+        if budget and remaining:
+            groups[None] = budget
+        return groups
+
     def apply(self, usage):
         observed_provider = usage.observed_provider or usage.provider
         usage.observed_provider = observed_provider
