@@ -24,7 +24,7 @@ from eurysx.collectors.sources import Source, fingerprint_paths
 from eurysx.store import UsageStore
 
 
-FIXTURES = Path(__file__).parent / "tests" / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CollectorFixtureTests(unittest.TestCase):
@@ -274,11 +274,39 @@ class UsageStoreTests(unittest.TestCase):
                 total_tokens=1, cost=0.0, cost_breakdown={}, session_id="session-1",
             )
             store.replace_source("pi:/session-1", "pi", "fingerprint-1", [entry])
-            store.record_failure("pi:/session-1", "parse failed")
+            source = Source("pi:/session-1", "fingerprint-2", "3", lambda: [])
+            store.record_failure(source, "pi", "parse failed")
 
             events = store.events(["pi"])
 
         self.assertEqual(len(events), 1)
+
+    def test_first_refresh_failure_is_persisted_without_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            source = Source("pi:first", "fingerprint-1", "3", lambda: [])
+            store.record_failure(source, "pi", OSError("parse failed"))
+            states = store.source_states(["pi"])
+
+            self.assertEqual(store.events(["pi"]), [])
+            self.assertEqual(len(states), 1)
+            self.assertEqual(states[0]["last_error"], "parse failed")
+            self.assertEqual(states[0]["fingerprint"], "fingerprint-1")
+            self.assertEqual(states[0]["parser_version"], "3")
+
+    def test_source_states_include_diagnostic_fields_and_filter_agents(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "data" / "eurysx.db")
+            store.record_failure(Source("pi:one", "fp", "3", lambda: []), "pi", "failed")
+            store.record_failure(Source("codex:one", "fp", "2", lambda: []), "codex", "failed")
+            states = store.source_states(["pi"])
+
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]["agent"], "pi")
+        self.assertEqual(
+            set(states[0]),
+            {"source_key", "agent", "fingerprint", "parser_version", "collected_at", "last_error"},
+        )
 
     def test_has_aggregate_events_presence_check(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -566,7 +594,8 @@ class IncrementalCollectionTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(state["fingerprint"], "fp-a")
         self.assertIn("source vanished", state["last_error"])
-        self.assertIn("last refresh failed for pi:one", warning)
+        self.assertIn("pi has last-good data from 1 source(s) whose latest refresh failed", warning)
+        self.assertNotIn("pi:one", warning)
 
     def test_report_warns_about_sources_still_on_an_older_parser(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -595,6 +624,25 @@ class IncrementalCollectionTests(unittest.TestCase):
         self.assertIn("1 pi stored source(s) no longer exist on disk", warning)
         self.assertIn("retained as last-good data", warning)
         self.assertNotIn("still on parser", warning)
+
+    def test_doctor_reports_source_health_without_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "data" / "eurysx.db")
+            store.replace_source("pi:one", "pi", "old", [self._entry()], parser_version="0")
+            store.record_failure(Source("pi:one", "new", "3", lambda: (_ for _ in ()).throw(AssertionError)), "pi", "failed")
+            output = io.StringIO()
+            with patch.object(app, "UsageStore", return_value=store), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
+                    patch.object(app, "detect_agents", return_value=["pi"]), \
+                    patch.object(app, "collect_sources", return_value=[Source("pi:one", "new", "3", lambda: (_ for _ in ()).throw(AssertionError))]), \
+                    redirect_stdout(output), redirect_stderr(io.StringIO()):
+                app.main(["doctor"])
+        self.assertIn("DOCTOR", output.getvalue())
+        self.assertIn("pi: detected", output.getvalue())
+        self.assertIn("changed", output.getvalue())
+        self.assertIn("parser v0", output.getvalue())
+        self.assertIn("failed", output.getvalue())
 
     def test_fingerprint_is_stable_and_tracks_file_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -643,6 +691,16 @@ class PricingTests(unittest.TestCase):
             cache = root / "cache"
             app.PricingResolver(root / "pricing.jsonc", cache)
             self.assertTrue(cache.exists())
+
+    def test_inspection_mode_reads_cache_without_fetching_or_creating_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "pricing.jsonc"
+            config.write_text('{"sources": {"models-dev": {"enabled": true, "url": "https://example.test"}}}')
+            with patch.object(app.PricingResolver, "_fetch", side_effect=AssertionError):
+                resolver = app.PricingResolver(config, root / "cache", inspect_only=True)
+            self.assertFalse((root / "cache").exists())
+            self.assertEqual(resolver.cache_status()[0]["status"], "missing")
 
     def test_cli_rejects_removed_pricing_file_override(self):
         with patch("sys.argv", ["eurysx", "--pricing-file", "x"]):
@@ -1762,7 +1820,7 @@ class VersionTests(unittest.TestCase):
             self.assertEqual(output.getvalue().strip(), "eurysx 0.0.6")
 
     def test_cli_version_matches_package_metadata(self):
-        with (Path(__file__).parent / "pyproject.toml").open("rb") as metadata:
+        with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:
             project = tomllib.load(metadata)["project"]
 
         self.assertEqual(app.__version__, project["version"])
