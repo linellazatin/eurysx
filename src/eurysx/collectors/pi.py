@@ -8,7 +8,7 @@ from ..models import UsageEntry
 from .sources import Source, fingerprint_paths
 
 
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 
 
 class PiAgentExtractor:
@@ -50,13 +50,20 @@ class PiAgentExtractor:
                     events.append(event)
         by_id = {event.get('id'): event for event in events}
         project_id = next((event.get('cwd') for event in events if event.get('cwd')), None)
+        # Live Pi files carry identity only on the `type: 'session'` header; the
+        # per-event `sessionId` fallback covers older files that had one.
+        header_session_id = next(
+            (event.get('id') for event in events
+             if event.get('type') == 'session' and event.get('id')),
+            None,
+        )
         for event in events:
             if event.get('type') != 'message':
                 continue
             msg = event.get('message', {})
             usage = msg.get('usage')
             timestamp = event.get('timestamp', '')
-            session_id = event.get('sessionId')
+            session_id = header_session_id or event.get('sessionId')
             if usage and usage.get('totalTokens', 0) > 0:
                 model_id = msg.get('model', '')
                 provider = msg.get('provider') or msg.get('providerID')

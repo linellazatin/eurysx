@@ -5,16 +5,17 @@ import json
 import re
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .analysis import UsageAnalyzer
-from .collectors import collect_sources, detect_agents
+from .collectors import PARSER_VERSIONS, collect_sources, detect_agents
 from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
 from .render import (
-    Colors, build_json_report, print_agent_header,
+    Colors, build_csv_report, build_json_report, build_markdown_report, print_agent_header,
     print_single_agent_report, print_summary_comparison,
 )
 from .store import UsageStore
@@ -90,7 +91,7 @@ def _promote_command_after_agent(argv):
             candidate = values[candidate_index]
             if candidate.startswith("-"):
                 break
-            if candidate in ("collect", "report"):
+            if candidate in ("collect", "report", "doctor"):
                 command = values.pop(candidate_index)
                 return [command, *values]
     return values
@@ -103,7 +104,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
-        "command", nargs="?", choices=("collect", "report"),
+        "command", nargs="?", choices=("collect", "report", "doctor"),
         help="collect metadata only, or report stored metadata only",
     )
     parser.add_argument(
@@ -123,7 +124,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Inclusive start date")
     parser.add_argument("--to", dest="end_date", type=_iso_date, metavar="YYYY-MM-DD",
                         help="Inclusive end date; requires --from")
-    parser.add_argument("--output", type=str, help="Save results to JSON")
+    parser.add_argument("--output", type=str, help="Save results to a file")
+    parser.add_argument("--format", choices=("json", "csv", "markdown"), default="json",
+                        help="Output file format (default: json; requires --output)")
     parser.add_argument("--model", nargs="+",
                         help="Only include usage for these model IDs")
     parser.add_argument("--provider", nargs="+",
@@ -137,6 +140,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--refresh-pricing", action="store_true",
                         help="Force refresh of enabled remote pricing sources")
     args = parser.parse_args(_promote_command_after_agent(argv))
+    if args.format != "json" and not args.output:
+        parser.error("--format requires --output")
     if args.end_date and not args.start_date:
         parser.error("--to requires --from")
     if args.start_date and any((args.days, args.weeks, args.month, args.quarter,
@@ -202,6 +207,83 @@ def _previous_window(start_date, end_date):
     return previous_end - timedelta(days=span - 1), previous_end
 
 
+def _warn_store_quality(store):
+    """Read-only visibility for retained data the current build cannot re-derive.
+
+    Neither warning mutates the store: retention is deliberate (Act II Phase 3),
+    and deleting events on an absent harness directory would destroy history.
+    `doctor` (Act III Phase 5) owns the per-source detail view.
+    """
+    stale = {}
+    vanished = {}
+    for row in store.all_sources():
+        agent = row["agent"]
+        current = PARSER_VERSIONS.get(agent)
+        if current and row["parser_version"] != current:
+            stale[(agent, row["parser_version"], current)] = \
+                stale.get((agent, row["parser_version"], current), 0) + 1
+        path = row["source_key"].split(":", 1)[-1]
+        if not Path(path).exists():
+            vanished[agent] = vanished.get(agent, 0) + 1
+    for (agent, stored, current), count in sorted(stale.items()):
+        print(
+            f"Warning: {count} stored {agent} source(s) are still on parser "
+            f"v{stored} (current v{current}); run 'eurysx collect' so period "
+            "filters see them.",
+            file=sys.stderr,
+        )
+    if vanished:
+        detail = ", ".join(f"{count} {agent}" for agent, count in sorted(vanished.items()))
+        print(
+            f"Warning: {detail} stored source(s) no longer exist on disk; their "
+            "events are retained as last-good data.",
+            file=sys.stderr,
+        )
+
+
+def _print_doctor(store, resolver, preferences):
+    """Print read-only local diagnostic state without parsing sources."""
+    detected = set(detect_agents())
+    print("DOCTOR")
+    print("\nDETECTED HARNESSES")
+    for agent in PARSER_VERSIONS:
+        print(f"{agent}: {'detected' if agent in detected else 'not detected'}")
+    descriptors = {}
+    for agent in detected:
+        try:
+            descriptors[agent] = {source.key: source for source in collect_sources(agent)}
+        except Exception as error:
+            descriptors[agent] = {}
+            print(f"Warning: could not inspect {agent} sources: {error}")
+    print("\nSTORED SOURCE HEALTH")
+    states = store.source_states()
+    if not states:
+        print("No stored sources.")
+    for index, row in enumerate(states, 1):
+        source = descriptors.get(row["agent"], {}).get(row["source_key"])
+        if source:
+            state = "unchanged" if source.fingerprint == row["fingerprint"] else "changed"
+        else:
+            path = Path(row["source_key"].split(":", 1)[-1])
+            state = "unreachable" if not path.exists() else "not collected"
+        parser = row["parser_version"]
+        current = PARSER_VERSIONS.get(row["agent"])
+        drift = f" parser v{parser}" + (f" (current v{current})" if current and parser != current else "")
+        error = f"; last error: {row['last_error']}" if row["last_error"] else ""
+        print(f"{row['agent']} source {index}: {state}; collected {row['collected_at']};{drift}{error}")
+    print("\nPRICING")
+    print(f"config: {resolver.config_path}")
+    for status in resolver.cache_status():
+        print(f"{status['source']}: {status['status']}" +
+              (f" ({status['fetched_at']})" if status["fetched_at"] else ""))
+    for warning in resolver.warnings:
+        print(f"Warning: {warning}")
+    print("\nPREFERENCES")
+    print(f"config: {preferences.config_path}")
+    for warning in preferences.warnings:
+        print(f"Warning: {warning}")
+
+
 def _refresh_store(store, agents):
     """Collect per raw source, skipping sources whose fingerprint and parser version are unchanged."""
     for agent in agents:
@@ -219,7 +301,7 @@ def _refresh_store(store, agents):
             try:
                 entries = source.parse()
             except Exception as error:
-                store.record_failure(source.key, error)
+                store.record_failure(source, agent, error)
                 failed += 1
                 print(f"  Refresh failed for {source.key}: {error}")
                 continue
@@ -234,6 +316,11 @@ def main(argv=None):
     args = parse_args(argv)
     if args.output:
         Colors.disable()
+
+    if args.command == "doctor":
+        store = UsageStore(get_eurysx_data_dir() / "eurysx.db")
+        _print_doctor(store, PricingResolver(inspect_only=True), PreferencesResolver())
+        return
 
     start_date, end_date, period_label = get_date_range(args)
     is_all_time = start_date is None
@@ -267,12 +354,16 @@ def main(argv=None):
         _refresh_store(store, agents_to_analyze)
         if args.command == "collect":
             return
-    for failure in store.failing_sources():
+    failures = {}
+    for failure in store.failing_sources(read_agents):
+        failures[failure["agent"]] = failures.get(failure["agent"], 0) + 1
+    for agent, count in sorted(failures.items()):
         print(
-            f"Warning: last refresh failed for {failure['source_key']}; "
-            f"reporting last good data ({failure['last_error']}).",
+            f"Warning: {agent} has last-good data from {count} source(s) "
+            "whose latest refresh failed.",
             file=sys.stderr,
         )
+    _warn_store_quality(store)
     store_agents = store.distinct_agents(read_agents)
     for record in store.events(read_agents, start_date, end_date,
                                models=args.model, providers=args.provider):
@@ -331,6 +422,19 @@ def main(argv=None):
             aggregates_present=not is_all_time and store.has_aggregate_events([agent]),
             billing_modes=set(args.billing_mode) if args.billing_mode else None,
         )
+        providers = {usage.provider for usage in usages if usage.provider}
+        groups = preferences.budget_groups(agent, providers)
+        if groups:
+            stats.pacing = {}
+            for provider, budget in groups.items():
+                budget_start, budget_end = UsageAnalyzer.budget_period(budget["period"], datetime.now().date())
+                budget_usages = [_usage_from_store(record) for record in store.events([agent], budget_start, budget_end)]
+                apply_pricing(budget_usages, resolver, preferences)
+                if provider is None:
+                    budget_usages = [usage for usage in budget_usages if usage.provider not in groups]
+                else:
+                    budget_usages = [usage for usage in budget_usages if usage.provider == provider]
+                stats.pacing[provider or "agent"] = UsageAnalyzer.pacing(stats, budget_usages, budget, datetime.now().date())
         report.agent_stats[agent] = stats
         report.agent_displays[agent] = UsageAnalyzer.display_period(
             usages, start_date, end_date, period_label, is_all_time,
@@ -354,7 +458,12 @@ def main(argv=None):
 
     if args.output:
         with open(args.output, "w") as output_file:
-            json.dump(build_json_report(report), output_file, indent=2)
+            if args.format == "json":
+                json.dump(build_json_report(report), output_file, indent=2)
+            elif args.format == "csv":
+                output_file.write(build_csv_report(report))
+            else:
+                output_file.write(build_markdown_report(report))
 
 
 if __name__ == "__main__":

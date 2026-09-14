@@ -52,7 +52,7 @@ class PricingResolver:
     SCHEMA_VERSION = 2
 
     def __init__(self, config_path: Optional[Path] = None, cache_dir: Optional[Path] = None,
-                 force_refresh: bool = False):
+                 force_refresh: bool = False, inspect_only: bool = False):
         default_config_dir, default_cache_dir = get_eurysx_dirs()
         self.config_path = config_path or default_config_dir / "pricing.jsonc"
         self.cache_dir = cache_dir or default_cache_dir
@@ -67,11 +67,37 @@ class PricingResolver:
                 self.config = load_jsonc(self.config_path)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self.warnings.append(f"pricing configuration ignored: {exc}")
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            self.warnings.append(f"pricing cache unavailable: {exc}")
-        self._load_configured_sources()
+        if not inspect_only:
+            try:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.warnings.append(f"pricing cache unavailable: {exc}")
+            self._load_configured_sources()
+
+    def cache_status(self):
+        """Read enabled pricing-cache metadata without fetching or writing."""
+        sources = self.config.get("sources", {}) if isinstance(self.config, dict) else {}
+        if not isinstance(sources, dict):
+            return []
+        statuses = []
+        for source, settings in sorted(sources.items()):
+            if not isinstance(settings, dict) or not settings.get("enabled"):
+                continue
+            path = self._cache_path(source)
+            try:
+                data = json.loads(path.read_text())
+                fetched_at = data.get("fetched_at")
+                status = "fresh" if self._cache_fresh(
+                    path, self._source_int(source, settings, "refreshDays", 7)
+                ) else "stale"
+                if data.get("schema_version") != self.SCHEMA_VERSION or not fetched_at:
+                    status = "invalid"
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                fetched_at = None
+                status = "missing" if not path.exists() else "invalid"
+            statuses.append({"source": source, "path": path, "fetched_at": fetched_at,
+                             "status": status})
+        return statuses
 
     @staticmethod
     def _key(provider: Optional[str], model_id: str) -> str:
@@ -362,6 +388,48 @@ class PreferencesResolver:
         for agent in self.SUPPORTED_AGENTS:
             if agent not in agents:
                 self._warn(f"preferences missing {agent}; using unknown defaults")
+
+    def budget_for(self, agent: str, provider: Optional[str] = None):
+        """Return a validated exact-route budget, if configured."""
+        agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
+        agent_config = agents.get(agent, {}) if isinstance(agents, dict) else {}
+        policy = agent_config if isinstance(agent_config, dict) else {}
+        providers = policy.get("providers", {})
+        if isinstance(providers, dict) and provider in providers and isinstance(providers[provider], dict):
+            policy = {**policy, **providers[provider]}
+        budget = policy.get("budget")
+        if budget is None:
+            return None
+        if not isinstance(budget, dict):
+            self._warn(f"preferences {agent}.budget must be an object")
+            return None
+        try:
+            usd = float(budget.get("usd"))
+        except (TypeError, ValueError):
+            usd = 0
+        period = budget.get("period")
+        if usd <= 0 or period not in {"week", "month", "quarter", "year"}:
+            self._warn(f"preferences {agent}.budget is invalid; pacing disabled")
+            return None
+        return {"usd": usd, "period": period}
+
+    def budget_groups(self, agent: str, providers):
+        """Group provider budgets, with explicit provider budgets replacing agent budget."""
+        agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
+        policy = agents.get(agent, {}) if isinstance(agents, dict) else {}
+        provider_policies = policy.get("providers", {}) if isinstance(policy, dict) else {}
+        groups = {}
+        remaining = set(providers)
+        for provider in sorted(remaining):
+            if isinstance(provider_policies, dict) and isinstance(provider_policies.get(provider), dict) and "budget" in provider_policies[provider]:
+                budget = self.budget_for(agent, provider)
+                if budget:
+                    groups[provider] = budget
+                remaining.discard(provider)
+        budget = self.budget_for(agent)
+        if budget and remaining:
+            groups[None] = budget
+        return groups
 
     def apply(self, usage):
         observed_provider = usage.observed_provider or usage.provider

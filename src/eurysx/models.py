@@ -73,6 +73,9 @@ class AgentStats:
     priced_token_coverage: Optional[float] = None
     cache_read_ratio: Optional[float] = None
     cache_efficiency_ratio: Optional[float] = None
+    requests_per_turn: Optional[float] = None
+    tool_calls_per_request: Optional[float] = None
+    tool_calls_per_turn: Optional[float] = None
     metered_tokens: int = 0
     non_metered_tokens: Dict[str, int] = None
     billing_mode_tokens: Dict[str, int] = None
@@ -81,6 +84,8 @@ class AgentStats:
     pricing_sources: Set[str] = None
     pricing_fetched_at: Dict[str, str] = None
     scope_warnings: List[str] = None
+    unresolved_routes: List[Dict] = None
+    pacing: Dict[str, Any] = None
     project_breakdown: Dict[str, Dict] = None  # Per-project token/cost breakdown ('unknown' bucket for unattributed)
     session_breakdown: Dict[str, Dict] = None  # Per-session token/cost breakdown
     
@@ -105,6 +110,10 @@ class AgentStats:
             self.pricing_fetched_at = {}
         if self.scope_warnings is None:
             self.scope_warnings = []
+        if self.unresolved_routes is None:
+            self.unresolved_routes = []
+        if self.pacing is None:
+            self.pacing = {}
         if self.project_breakdown is None:
             self.project_breakdown = {}
         if self.session_breakdown is None:

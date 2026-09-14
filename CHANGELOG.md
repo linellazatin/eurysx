@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.0] - Local observability, diagnostics, pacing, and stable exports
+
+### Fixed
+
+- Parse Claude Code date-only timestamps correctly; aggregate rates use observed dates and omit false daily spikes.
+- Attribute Pi sessions from session headers, retaining the legacy per-event fallback.
+- Calculate pacing from the full calendar budget window; provider budgets override agent budgets for their routes.
+
+### Added
+
+- Activity ratios for requests/turns/tool calls, reported as `N/A` when their inputs are absent.
+- Read-only parser-drift and unreachable-source warnings; retained history is never deleted.
+- `eurysx doctor` for terminal-only harness, source, pricing-cache, and configuration diagnostics. Failed-refresh report warnings are agent-scoped.
+- Preference budgets, deterministic pacing, and exact unresolved-route diagnostics; subscription billing remains `N/A`.
+- Stable JSON schema v1 plus CSV and Markdown exports from the shared analysis result.
+- Operational manual with CLI/output redirects and a source-drift regression check.
+- Trusted-Publishing GitHub workflow: validation, PyPI upload, and changelog-based GitHub Release.
+
+### Tests
+
+- Coverage for timestamp scope, Pi attribution, ratios, diagnostics, stored-source failures, and the doctor command.
+
 ## [0.0.5] - More hardening: pushdown, selectors, grouping, comparisons
 
 ### Added
