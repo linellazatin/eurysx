@@ -6,7 +6,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.0.6 is in development. It is a local CLI, not a hosted service.
+> Eurysx v0.1.0 is a local CLI, not a hosted service.
 
 ## Install
 
@@ -27,12 +27,15 @@ eurysx --agent all --days 30 --output reports/usage.json
 eurysx --refresh-pricing
 eurysx collect --agent codex
 eurysx report --agent codex --days 30
+eurysx doctor
 ```
 
 `reports/` is ignored by Git.
 
 `eurysx` collects current local metadata and then reports it. `collect` stores
-metadata only; `report` reads the local store without collecting. During Act II,
+metadata only; `report` reads the local store without collecting. `doctor` is
+terminal-only and reports local harness, source, pricing-cache, and configuration
+health without parsing history, refreshing prices, or deleting retained data. During Act II,
 the store is `data/eurysx.db` relative to the current project directory. Set
 `EURYSX_DATA_DIR` only to deliberately relocate it.
 
@@ -42,17 +45,14 @@ Period selectors are mutually exclusive: `--days N`, `--weeks N`,
 
 Filter selectors `--model`, `--provider`, and `--billing-mode` narrow the
 analyzed rows and combine with `--agent` and the period selectors; bounded
-period runs also compare against the same-length previous window. See
-[docs/cli.md](docs/cli.md) for details.
+period runs also compare against the same-length previous window. See the
+[operational manual](docs/manual.md) for details.
 
 ## Documentation
 
-Command and output references live in `docs/` and are updated on every
-phase/act completion alongside this file and the changelog:
-
-- [docs/cli.md](docs/cli.md) — full command, flag, and period-selector reference
-- [docs/output.md](docs/output.md) — what a report contains: terminal sections
-  and the JSON `--output` field contract
+The [operational manual](docs/manual.md) is the authoritative command, output,
+configuration, and diagnostics reference. Legacy [CLI](docs/cli.md) and
+[output](docs/output.md) pages redirect there.
 
 This manual is the authoritative contract for the JSONC configuration files.
 
@@ -140,7 +140,9 @@ here: `"billingMode": ""` is invalid policy data and is reported as unknown.
 For example, Codex can classify its recorded OpenAI route as `subscription`, its
 recorded Bedrock route as `metered`, and its recorded LiteLLM route as `local`.
 If a record has no provider, or its provider is absent from `providers`, its
-billing mode is `unknown` unless the agent-level policy defines one.
+billing mode is `unknown` unless the agent-level policy defines one. Optional
+budgets use `{"usd": 100, "period": "month"}` under an agent or exact provider;
+invalid budgets disable pacing with a warning.
 
 Billing modes describe incremental cost, not capability:
 
@@ -241,7 +243,7 @@ file.
 ## Development
 
 ```bash
-PYTHONPATH=src python3 -m unittest -v test_eurysx.py
+PYTHONPATH=src python3 -m unittest -v tests/test_eurysx.py
 python3 -m py_compile src/eurysx/*.py
 ```
 

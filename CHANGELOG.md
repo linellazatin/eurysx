@@ -1,54 +1,26 @@
 # Changelog
 
-## [0.0.6] - Checkpoint blockers + activity ratios
+## [0.1.0] - Local observability, diagnostics, pacing, and stable exports
 
 ### Fixed
 
-- `UsageAnalyzer.extract_date_from_timestamp` parses date-only (`YYYY-MM-DD`)
-  stamps. Claude Code's stats-cache rows carry `lastComputedDate` only, so every
-  all-time Claude Code report pinned its period to today and printed `$0.00`
-  daily/weekly/monthly/quarterly/yearly rates beside a non-zero known cost.
-- Pi session attribution: live Pi files carry the session id only on the
-  `type: "session"` header (`id`), so the per-event `sessionId` lookup left
-  `session_id` null on every stored Pi row — `Total sessions: 0` and a single
-  `unknown` session bucket, while project attribution worked. The collector now
-  reads the header id and keeps `sessionId` as a legacy fallback. Parser version
-  3: stored Pi events re-collect on the next `eurysx` or `eurysx collect` run.
-  The Pi fixture now matches the live shape (no per-event `sessionId`).
+- Parse Claude Code date-only timestamps correctly; aggregate rates use observed dates and omit false daily spikes.
+- Attribute Pi sessions from session headers, retaining the legacy per-event fallback.
+- Calculate pacing from the full calendar budget window; provider budgets override agent budgets for their routes.
 
 ### Added
 
-- Act III Phase 4.1 activity ratios on `AgentStats`: `requests_per_turn`,
-  `tool_calls_per_request`, `tool_calls_per_turn`. Each is `null`/`N/A` when its
-  denominator is absent — a ranged Claude Code report has no request, turn, or
-  tool rows at all (they live only on its aggregate), which is unknown, not zero
-  or infinity. Terminal shows them as a `Ratios:` line under `MODEL ACTIVITY
-  VOLUME PER TIME PERIOD`; JSON gains the three keys (additive baseline
-  extension, values locked for the hermetic pi fixture).
-- Two read-only store-quality warnings on stderr: sources still stored under an
-  older parser version than the current collector (`run 'eurysx collect'`, since
-  `report` never re-normalizes stored rows) and sources whose files no longer
-  exist on disk. Neither deletes anything; retention stays deliberate and the
-  `doctor` command (Phase 5) keeps the per-source detail view.
-
-### Changed
-
-- Aggregate rows are excluded from `daily_activity`: one row summarizing all
-  history would be a false single-day spike. The terminal per-active-day cost
-  and token lines print `n/a` when no per-day rows exist, instead of repeating
-  the across-all-days figure under an active-days label.
-- `Total sessions:` says `N attributed (+ unattributed rows)` when the session
-  breakdown holds unattributed rows, so a zero count no longer contradicts the
-  `unknown` bucket below it.
+- Activity ratios for requests/turns/tool calls, reported as `N/A` when their inputs are absent.
+- Read-only parser-drift and unreachable-source warnings; retained history is never deleted.
+- `eurysx doctor` for terminal-only harness, source, pricing-cache, and configuration diagnostics. Failed-refresh report warnings are agent-scoped.
+- Preference budgets, deterministic pacing, and exact unresolved-route diagnostics; subscription billing remains `N/A`.
+- Stable JSON schema v1 plus CSV and Markdown exports from the shared analysis result.
+- Operational manual with CLI/output redirects and a source-drift regression check.
+- Trusted-Publishing GitHub workflow: validation, PyPI upload, and changelog-based GitHub Release.
 
 ### Tests
 
-- 10 tests: date-only parsing, aggregate rates with empty daily activity,
-  all-time period pinning from a date-only stamp, the terminal `n/a` line, the
-  legacy Pi `sessionId` fallback, both ratio cases (metric-row split and
-  all-`None` scope), and the parser-drift and vanished-source warnings.
-- Simulated-CLI tests now capture stderr, so the new warnings stay out of the
-  suite output.
+- Coverage for timestamp scope, Pi attribution, ratios, diagnostics, stored-source failures, and the doctor command.
 
 ## [0.0.5] - More hardening: pushdown, selectors, grouping, comparisons
 

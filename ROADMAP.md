@@ -239,35 +239,35 @@ pages and are folded into it when that phase lands.
 
 ### Phase 5: Doctor diagnostics
 
-- [ ] Add `eurysx doctor`: detected harnesses, per-source state (collected at,
+- [x] Add `eurysx doctor`: detected harnesses, per-source state (collected at,
   parser version, fingerprint changes, last error), pricing source and cache
   freshness, and configuration validation.
-- [ ] Reuse the persisted diagnostics and existing resolver and preference
-  warnings; introduce no new state. Detection for two of these already exists and
-  must be reused, not rebuilt: `store.all_sources()` plus
-  `collectors.PARSER_VERSIONS` (parser drift) and the on-disk existence check in
-  `cli._warn_store_quality` (vanished sources), both stderr-only today.
-- [ ] Flag reports whose metrics include last-good data from sources whose most
-  recent refresh failed, agent-scoped, as counts or booleans (never
-  `source_key` paths, which embed absolute paths). `store.failing_sources()` is
-  not agent-scoped and `UsageEntry` carries no `source_key`, so the plumbing
-  decision is part of this item. (Struck from Phase 4.)
-- [ ] Surface retained-but-unreachable history in the doctor view: sources whose
-  files no longer exist on disk keep their events by design, so reconcile by
-  visibility, never by deleting.
+- [x] Reuse persisted diagnostics and resolver/preference warnings without new
+  state; reuse harness detection, parser versions, and retained-source checks.
+- [x] Flag reports that may include last-good data after a failed refresh with
+  agent-scoped source counts, never `source_key` paths. (Struck from Phase 4.)
+- [x] Surface retained-but-unreachable history in doctor without deleting it.
 
-### Phase 6: Stable exports
+### Phase 6: Pacing, insights, and pricing hardening
 
-- [ ] Version the JSON report contract and document it as stable; the shape
-  extended in Phase 1 is explicitly unstable history until this lands.
-- [ ] Add CSV and Markdown presenters rendered from the same analysis result.
-- [ ] Pin every export contract with tests, diffed against the Phase 1
+- [x] Improve pricing diagnostics for observed metered provider/model routes with
+  exact provider-qualified lookups and ordered fallbacks. Never fuzzy-match,
+  infer, or treat unresolved pricing as free; subscription/credit/quota/local
+  usage remains `N/A` incremental USD.
+- [x] Diagnose unresolved metered routes by exact provider/model and reason:
+  missing metered policy, enabled source, or verified source mapping.
+- [x] Add optional positive USD budgets to `preferences.jsonc` at agent level,
+  with exact-provider overrides and validation warnings.
+- [x] Add deterministic pacing only when a valid budget and complete known-cost
+  inputs exist: spend, remaining budget, calendar pace, and on-track status.
+  Otherwise report why pacing is unavailable.
+
+### Phase 7: Stable exports
+
+- [x] Version the JSON report contract and document it as stable.
+- [x] Add CSV and Markdown presenters rendered from the same analysis result.
+- [x] Pin every export contract with tests, diffed against the Phase 1
   baseline snapshot.
-
-### Phase 7: Pacing and insights
-
-- [ ] Add deterministic budget pacing and insights only when their inputs are
-  present and trustworthy.
 
 ### Phase 8: Operational manual
 
@@ -276,12 +276,9 @@ skimming a product page. Every command, flag, path, warning string, file, and
 JSON field it names must be verified against a live run, and every failure mode
 must have a named remedy.
 
-- [ ] Create `docs/manual.md` as the operational source of truth, with
-  README demoted to the concise product and technical overview (what it is, why,
-  install pointer, one configuration example, links into the manual). The manual
-  owns the authoritative JSONC schema; README keeps a summary and the privacy
-  statement.
-- [ ] Manual contents, at minimum: install and first run; full CLI contract
+- [x] Create `docs/manual.md` as the operational source of truth, with
+  README demoted to the concise product and technical overview.
+- [x] Manual contents: install and first run; full CLI contract
   including every selector, exit behavior, and stdout/stderr split; store and
   cache lifecycle on disk (what is disposable, what is retained, how a
   parser-version bump re-collects); per-harness collector surface (what each
@@ -289,20 +286,20 @@ must have a named remedy.
   output contracts field by field for terminal and JSON; pricing and preference
   precedence; a diagnostics table mapping each `Warning:` string to cause and
   remedy; and a worked guide to adding a fifth collector.
-- [ ] Fold `docs/cli.md` and `docs/output.md` into the manual rather than
+- [x] Fold `docs/cli.md` and `docs/output.md` into the manual rather than
   maintaining overlapping pages: keep one place per fact, with README, `AGENTS.md`,
   and CHANGELOG pointing at it.
-- [ ] Write it so an agent can execute against it: exact commands, absolute
+- [x] Write it so an agent can execute against it: exact commands, absolute
   checkout-local paths, invariants stated as rules (recorded cost beats policy,
   unknown pricing is never free, no content fields, no deletions in `report`),
   and the release/version-bump checklist in one place.
-- [ ] Pin the manual against drift: a check that documented flags, warning
+- [x] Pin the manual against drift: a check that documented flags, warning
   strings, and JSON keys exist in the source (grep-level is enough; no new
   framework), so a phase that renames something cannot leave the manual behind.
-- [ ] Land the export-contract chapter after Phase 6 versions the JSON report;
+- [x] Land the export-contract chapter after Phase 7 versions the JSON report;
   until then mark that chapter as tracking an unstable shape. Phase 8 itself is
   not blocked on Phases 5-7 and can start once Phase 4 closes.
-- [ ] Update the Act III docs convention in `AGENTS.md` to name `docs/manual.md`
+- [x] Update the Act III docs convention in `AGENTS.md` to name `docs/manual.md`
   as the operational source of truth when this lands.
 
 ## Act IV: Local View
