@@ -1039,6 +1039,42 @@ class CostCoverageTests(unittest.TestCase):
             app.build_markdown_report(report),
         )
 
+    def test_html_report_renders_analysis_sections_and_unavailable_cost(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage("configured", 1.5, 40, model="priced-model"),
+                self._usage("unknown", 0.0, 10, model="unknown-model"),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        stats.pricing_sources.add("models-dev")
+        stats.pricing_fetched_at["models-dev"] = "2026-08-01T00:00:00Z"
+        report = self._terminal_report(stats)
+        html = app.build_html_report(report)
+
+        for section in (
+            "Overview", "Daily activity", "By agent", "By model",
+            "Pricing provenance", "Projects", "Sessions",
+        ):
+            self.assertIn(section, html)
+        self.assertIn("priced-model", html)
+        self.assertIn("unknown-model", html)
+        self.assertIn("models-dev", html)
+        self.assertIn("2026-08-01T00:00:00Z", html)
+        self.assertIn("N/A", html)
+
+    def test_html_overview_labels_unknown_cost_as_unavailable(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("unknown", 0.0, 10)],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        html = app.build_html_report(self._terminal_report(stats))
+
+        overview = html.split("<h2>Overview</h2>", 1)[1].split("</section>", 1)[0]
+        self.assertIn("N/A", overview)
+        self.assertNotIn("$0.000000", overview)
+
     def test_daily_activity_labels_unknown_cost_as_unavailable(self):
         stats = app.UsageAnalyzer.analyze_agent(
             "pi", [self._usage("unknown", 0.0, 10)],
@@ -1912,18 +1948,19 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         }},
     }
 
-    def _run(self):
+    def _run(self, output_format="json", recorded=True):
+        cost = 1.25 if recorded else 0.0
         usage = app.UsageEntry(
             agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
             input_tokens=10, output_tokens=20, cache_read_tokens=30,
-            cache_write_tokens=40, total_tokens=100, cost=1.25,
-            cost_breakdown={"total": 1.25}, provider="openai",
-            observed_provider="openai", cost_status="recorded", session_id="s1",
+            cache_write_tokens=40, total_tokens=100, cost=cost,
+            cost_breakdown={"total": cost} if recorded else {}, provider="openai",
+            observed_provider="openai", cost_status="recorded" if recorded else "unknown", session_id="s1",
             project_id="/repo/a", model_requests=1, model_turns=1,
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            output_path = root / "report.json"
+            output_path = root / f"report.{output_format}"
             terminal = io.StringIO()
             # Hermetic pricing/preferences: no repo config leaks into the baseline.
             pricing = app.PricingResolver(root / "missing.jsonc", root / "cache")
@@ -1931,7 +1968,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             argv = [
                 "eurysx", "--agent", "pi",
                 "--from", "2026-08-01", "--to", "2026-08-01",
-                "--output", str(output_path),
+                "--output", str(output_path), "--format", output_format,
             ]
             sources = lambda agent, home=None: [
                 Source("pi:fake", "fingerprint-1", "1", lambda: [usage])
@@ -1946,7 +1983,15 @@ class Act3Phase1BaselineTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()),
             ):
                 app.main()
-            return json.loads(output_path.read_text()), terminal.getvalue()
+            content = output_path.read_text()
+            return (json.loads(content) if output_format == "json" else content), terminal.getvalue()
+
+    def test_html_output_is_written_via_cli(self):
+        html, _ = self._run("html", recorded=False)
+
+        self.assertTrue(html.startswith("<!doctype html>"))
+        self.assertIn("Pricing provenance", html)
+        self.assertIn("N/A", html)
 
     def test_json_output_shape_is_the_locked_baseline(self):
         report, _ = self._run()
@@ -2055,7 +2100,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.1")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.2")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

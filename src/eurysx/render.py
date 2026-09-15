@@ -1,6 +1,7 @@
 """Report rendering: terminal presentation and the JSON export payload."""
 
 import csv
+import html
 import io
 import sys
 from typing import Dict
@@ -484,6 +485,78 @@ def build_markdown_report(report: AnalysisReport) -> str:
             provider, model = provider_model.split("/", 1)
             lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_cost_status(data)} |")
     return "\n".join(lines) + "\n"
+
+
+def build_html_report(report: AnalysisReport) -> str:
+    """Render a standalone, metadata-only local report."""
+    def text(value) -> str:
+        return html.escape(str(value))
+
+    def table(headers, rows) -> str:
+        return (
+            "<table><thead><tr>" + "".join(f"<th>{text(header)}</th>" for header in headers)
+            + "</tr></thead><tbody>"
+            + "".join("<tr>" + "".join(f"<td>{text(value)}</td>" for value in row) + "</tr>" for row in rows)
+            + "</tbody></table>"
+        )
+
+    sections = [
+        "<section><h2>Overview</h2>" + table(
+            ("Agent", "Tokens", "Known cost", "Entries"),
+            [
+                (agent, f"{stats.total_tokens:,}", _cost_display({
+                    "cost": stats.known_cost, "cost_status_counts": stats.cost_status_counts,
+                }), f"{stats.usage_entries:,}")
+                for agent, stats in sorted(report.agent_stats.items())
+            ],
+        ) + "</section>",
+    ]
+    for agent, stats in sorted(report.agent_stats.items()):
+        sections.extend((
+            f"<section><h2>Daily activity: {text(agent)}</h2>" + table(
+                ("Date", "Tokens", "Known cost", "Cost status"),
+                [(day, f"{data['tokens']:,}", _cost_display(data), _cost_status(data))
+                 for day, data in sorted(stats.daily_activity.items())],
+            ) + "</section>",
+            f"<section><h2>By model: {text(agent)}</h2>" + table(
+                ("Model", "Tokens", "Known cost", "Cost status"),
+                [(model, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
+                  _cost_display(data), _cost_status(data))
+                 for model, data in sorted(stats.model_breakdown.items())],
+            ) + "</section>",
+            f"<section><h2>Projects: {text(agent)}</h2>" + table(
+                ("Project", "Tokens", "Known cost", "Cost status"),
+                [(project, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
+                  _cost_display(data), _cost_status(data))
+                 for project, data in sorted(stats.project_breakdown.items())],
+            ) + "</section>",
+            f"<section><h2>Sessions: {text(agent)}</h2>" + table(
+                ("Session", "Tokens", "Known cost", "Cost status"),
+                [(session, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
+                  _cost_display(data), _cost_status(data))
+                 for session, data in sorted(stats.session_breakdown.items())],
+            ) + "</section>",
+            f"<section><h2>Pricing provenance: {text(agent)}</h2>" + table(
+                ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"),
+                [
+                    (provider_model.split("/", 1)[0], ", ".join(data.get("observed_providers", [])),
+                     provider_model.split("/", 1)[1], mode[:-1], f"{data['tokens']:,}",
+                     _cost_display(data), _cost_status(data))
+                    for route, data in sorted(stats.route_breakdown.items())
+                    for provider_model, mode in [route.rsplit(" [", 1)]
+                ],
+            ) + table(
+                ("Pricing source", "Fetched at"),
+                [
+                    (source, stats.pricing_fetched_at.get(source, "N/A"))
+                    for source in sorted(stats.pricing_sources) or ["No resolved source"]
+                ],
+            ) + "</section>",
+        ))
+    return """<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Eurysx report</title><style>body{max-width:1100px;margin:2rem auto;padding:0 1rem;background:#101315;color:#e8e5df;font:15px system-ui,sans-serif}h1,h2{color:#f4c95d}section{margin:2rem 0}table{width:100%;border-collapse:collapse}th,td{padding:.5rem;text-align:left;border-bottom:1px solid #3a3f42}th{color:#aeb8bb}td{font-variant-numeric:tabular-nums}</style></head><body>""" + (
+        f"<h1>Eurysx report</h1><p>Period: {text(report.period_label)}</p>"
+        "<h2>By agent</h2>" + sections[0] + "".join(sections[1:]) + "</body></html>"
+    )
 
 
 def build_json_report(report: AnalysisReport) -> Dict:

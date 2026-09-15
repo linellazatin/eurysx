@@ -15,7 +15,7 @@ from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
 from .render import (
-    Colors, build_csv_report, build_json_report, build_markdown_report, print_agent_header,
+    Colors, build_csv_report, build_html_report, build_json_report, build_markdown_report, print_agent_header,
     print_single_agent_report, print_summary_comparison,
 )
 from .store import UsageStore
@@ -125,7 +125,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--to", dest="end_date", type=_iso_date, metavar="YYYY-MM-DD",
                         help="Inclusive end date; requires --from")
     parser.add_argument("--output", type=str, help="Save results to a file")
-    parser.add_argument("--format", choices=("json", "csv", "markdown"), default="json",
+    parser.add_argument("--format", choices=("json", "csv", "markdown", "html"), default="json",
                         help="Output file format (default: json; requires --output)")
     parser.add_argument("--model", nargs="+",
                         help="Only include usage for these model IDs")
@@ -458,8 +458,10 @@ def main(argv=None):
                 json.dump(build_json_report(report), output_file, indent=2)
             elif args.format == "csv":
                 output_file.write(build_csv_report(report))
-            else:
+            elif args.format == "markdown":
                 output_file.write(build_markdown_report(report))
+            else:
+                output_file.write(build_html_report(report))
 
 
 if __name__ == "__main__":
