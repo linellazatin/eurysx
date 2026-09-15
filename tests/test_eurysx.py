@@ -883,13 +883,13 @@ class PricingTests(unittest.TestCase):
 
 class CostCoverageTests(unittest.TestCase):
     @staticmethod
-    def _usage(cost_status, cost, total_tokens):
+    def _usage(cost_status, cost, total_tokens, model="model", billing_mode="metered"):
         return app.UsageEntry(
-            agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
+            agent="pi", model_id=model, timestamp="2026-08-01T12:00:00Z",
             input_tokens=total_tokens, output_tokens=0, cache_read_tokens=0,
             cache_write_tokens=0, total_tokens=total_tokens, cost=cost,
             cost_breakdown={"total": cost} if cost_status != "unknown" else {},
-            provider="provider", billing_mode="metered", cost_status=cost_status,
+            provider="provider", billing_mode=billing_mode, cost_status=cost_status,
         )
 
     def test_analysis_reports_known_cost_and_token_coverage(self):
@@ -976,6 +976,83 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(stats.route_breakdown["amazon-bedrock/model [metered]"]["tokens"], 200)
         self.assertIn("Metered token coverage:", output.getvalue())
 
+    def test_route_cost_statuses_preserve_unknown_non_metered_and_partial_costs(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage("unknown", 0.0, 10, model="unknown-model"),
+                self._usage("not_applicable", 0.0, 20, model="subscription-model", billing_mode="subscription"),
+                self._usage("recorded", 0.0, 30, model="recorded-zero"),
+                self._usage("configured", 1.5, 40, model="partial-model"),
+                self._usage("unknown", 0.0, 50, model="partial-model"),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        self.assertEqual(
+            stats.route_breakdown["provider/unknown-model [metered]"]["cost_status_counts"],
+            {"unknown": 1},
+        )
+        self.assertEqual(
+            stats.route_breakdown["provider/subscription-model [subscription]"]["cost_status_counts"],
+            {"not_applicable": 1},
+        )
+        self.assertEqual(
+            stats.route_breakdown["provider/recorded-zero [metered]"]["cost_status_counts"],
+            {"recorded": 1},
+        )
+        self.assertEqual(
+            stats.route_breakdown["provider/partial-model [metered]"]["cost_status_counts"],
+            {"configured": 1, "unknown": 1},
+        )
+
+    def test_exports_and_terminal_label_unavailable_route_costs(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage("unknown", 0.0, 10, model="unknown-model"),
+                self._usage("not_applicable", 0.0, 20, model="subscription-model", billing_mode="subscription"),
+                self._usage("recorded", 0.0, 30, model="recorded-zero"),
+                self._usage("configured", 1.5, 40, model="partial-model"),
+                self._usage("unknown", 0.0, 50, model="partial-model"),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        report = self._terminal_report(stats)
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            app.print_single_agent_report(report, "pi")
+
+        self.assertIn("Provider", terminal.getvalue())
+        self.assertIn("Cost status", terminal.getvalue())
+        self.assertIn("N/A", terminal.getvalue())
+        self.assertIn("partial", terminal.getvalue())
+        csv_report = app.build_csv_report(report)
+        self.assertIn(
+            "pi,provider,provider,unknown-model,metered,10,N/A,1,0,0,0,unknown",
+            csv_report,
+        )
+        self.assertIn(
+            "pi,provider,provider,partial-model,metered,90,1.5,2,0,0,0,partial",
+            csv_report,
+        )
+        self.assertIn(
+            "| provider | provider | unknown-model | metered | 10 | N/A | unknown |",
+            app.build_markdown_report(report),
+        )
+
+    def test_daily_activity_labels_unknown_cost_as_unavailable(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("unknown", 0.0, 10)],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._terminal_report(stats), "pi")
+
+        daily_section = output.getvalue().split("DAILY ACTIVITY", 1)[1].split("SUMMARY STATISTICS", 1)[0]
+        self.assertIn("Cost status", daily_section)
+        self.assertIn("N/A", daily_section)
+        self.assertIn("unknown", daily_section)
+
     def test_unknown_route_tokens_do_not_reduce_metered_coverage(self):
         metered = self._usage("recorded", 1.0, 100)
         metered.billing_mode = "metered"
@@ -1041,6 +1118,7 @@ class GroupingDimensionTests(unittest.TestCase):
     def _bucket(*buckets):
         return {
             "cache_read": 0, "cache_write": 0, "cost": sum(b[1] for b in buckets),
+            "cost_status_counts": {"recorded": len(buckets)},
             "input": sum(b[0] for b in buckets), "model_requests": len(buckets),
             "model_tool_calls": 0, "model_turns": len(buckets), "output": 0,
         }
@@ -1092,9 +1170,9 @@ class GroupingDimensionTests(unittest.TestCase):
             app.print_single_agent_report(self._report(attributed), "pi")
         terminal = output.getvalue()
         self.assertIn("BREAKDOWN BY SESSION", terminal)
-        self.assertIn("s1:", terminal)
+        self.assertIn("s1       100", terminal)
         self.assertIn("BREAKDOWN BY PROJECT", terminal)
-        self.assertIn("/repo/a:", terminal)
+        self.assertIn("/repo/a  100", terminal)
 
         unattributed = app.UsageAnalyzer.analyze_agent(
             "pi", [self._usage()],
@@ -1349,6 +1427,27 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.pricing_sources,
                          ["amazon-bedrock", "models-dev", "pi-models-store"])
 
+    def test_model_id_rules_override_only_matching_litellm_models(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"prefix": "local.", "billingMode": "local"},
+                    {"exact": "local.cloud", "billingMode": "subscription"},
+                    {"prefix": "bedrock.", "provider": "amazon-bedrock", "billingMode": "metered", "pricing": {"source": "amazon-bedrock"}},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            local = self._usage("litellm", "local.qwen")
+            exact = self._usage("litellm", "local.cloud")
+            cloud = self._usage("litellm", "bedrock.claude")
+            unknown = self._usage("litellm", "gpt")
+            for usage in (local, exact, cloud, unknown):
+                preferences.apply(usage)
+
+        self.assertEqual((local.billing_mode, exact.billing_mode, unknown.billing_mode), ("local", "subscription", "unknown"))
+        self.assertEqual((cloud.provider, cloud.billing_mode, cloud.pricing_sources), ("amazon-bedrock", "metered", ["amazon-bedrock"]))
+
     def test_subscription_usage_is_not_priced_even_when_price_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1397,6 +1496,56 @@ class PreferencesTests(unittest.TestCase):
             groups = app.PreferencesResolver(path).budget_groups("codex", {"openai", "bedrock"})
         self.assertEqual(groups, {"openai": {"usd": 25.0, "period": "week"},
                                   None: {"usd": 100.0, "period": "month"}})
+
+    def test_invalid_model_id_rule_warns_and_uses_provider_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"exact": "local.qwen", "prefix": "local.", "billingMode": "local"},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage("litellm", "local.qwen")
+            preferences.apply(usage)
+
+        self.assertEqual(usage.billing_mode, "unknown")
+        self.assertTrue(preferences.warnings)
+
+    def test_duplicate_exact_model_id_rules_warn_and_use_provider_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"exact": "local.qwen", "billingMode": "local"},
+                    {"exact": "local.qwen", "billingMode": "subscription"},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage("litellm", "local.qwen")
+            preferences.apply(usage)
+
+        self.assertEqual(usage.billing_mode, "unknown")
+        self.assertTrue(preferences.warnings)
+
+    def test_model_rule_budget_is_separate_from_provider_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"budget": {"usd": 100, "period": "month"}, "modelIdRules": [
+                    {"prefix": "local.", "billingMode": "local", "budget": {"usd": 10, "period": "week"}},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            proxy = self._usage("litellm", "cloud.model")
+            local = self._usage("litellm", "local.qwen")
+            preferences.apply(proxy)
+            preferences.apply(local)
+
+        self.assertEqual(preferences.budget_groups_for_usages([proxy, local]), {
+            "litellm": {"usd": 100.0, "period": "month"},
+            "litellm/prefix:local.": {"usd": 10.0, "period": "week"},
+        })
 
     def test_invalid_provider_policy_emits_a_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1713,12 +1862,12 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "cache_efficiency_ratio": 0.75,
         "cache_read_ratio": 30 / 70,
         "cost_status_counts": {"recorded": 1},
-        "daily_activity": {"2026-08-01": {"cost": 1.25, "tokens": 100}},
+        "daily_activity": {"2026-08-01": {"cost": 1.25, "cost_status_counts": {"recorded": 1}, "tokens": 100}},
         "daily_cost": 1.25,
         "known_cost": 1.25,
         "metered_tokens": 100,
         "model_breakdown": {"model": {
-            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "cost_status_counts": {"recorded": 1}, "input": 10,
             "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
         }},
         "model_requests": 1,
@@ -1732,7 +1881,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "quarterly_cost": 112.5,
         "requests_per_turn": 1.0,
         "route_breakdown": {"openai/model [metered]": {
-            "cost": 1.25, "entries": 1, "model_requests": 1,
+            "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
         }},
         "scope_warnings": [],
@@ -1754,11 +1903,11 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "weekly_cost": 8.75,
         "yearly_cost": 456.25,
         "project_breakdown": {"/repo/a": {
-            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "cost_status_counts": {"recorded": 1}, "input": 10,
             "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
         }},
         "session_breakdown": {"s1": {
-            "cache_read": 30, "cache_write": 40, "cost": 1.25, "input": 10,
+            "cache_read": 30, "cache_write": 40, "cost": 1.25, "cost_status_counts": {"recorded": 1}, "input": 10,
             "model_requests": 1, "model_tool_calls": 0, "model_turns": 1, "output": 20,
         }},
     }
@@ -1906,7 +2055,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.0")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.1")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

@@ -5,7 +5,7 @@ Eurysx is a local-first CLI for metadata-only usage analysis of Claude Code, Ope
 ## Install and first run
 
 ```bash
-python3 -m pip install .
+pip3 install eurysx
 eurysx --help
 eurysx doctor
 eurysx
@@ -42,7 +42,7 @@ eurysx --agent all --output reports/usage.md --format markdown
 
 `--output PATH` writes a file. `--format json|csv|markdown` selects its format and defaults to JSON. CSV and Markdown require `--output`.
 
-JSON schema version 1 is stable. It contains `schema_version: 1`, analysis period, pricing/preferences provenance, agent stats, `unresolved_routes`, `pacing`, and period comparison. CSV writes deterministic agent/provider/model route rows. Markdown writes a period, agent summaries, and route tables.
+JSON schema version 1 is stable. It contains `schema_version: 1`, analysis period, pricing/preferences provenance, agent stats, `unresolved_routes`, `pacing`, and period comparison. Aggregate breakdowns retain cost-status counts so a numeric cost is never inferred from unavailable pricing. CSV writes deterministic agent/provider/model route rows with `cost_status`; unavailable `known_cost_usd` is `N/A`. Markdown writes a period, agent summaries, and route tables with the same cost status.
 
 ## Local state lifecycle
 
@@ -72,15 +72,20 @@ Collectors normalize usage metadata only. Parser read failures propagate to coll
 
 Pricing precedence is recorded harness cost, explicit override, configured source order, then unknown. Unknown is never free. Exact provider/model matching is required; aliases are provider-scoped. Supported sources are `amazon-bedrock`, `pi-models-store`, and `models-dev`.
 
-Preferences define agent defaults and exact provider overrides. Billing modes are `metered`, `subscription`, `credit`, `quota`, `local`, and `unknown`. Subscription-like modes report `N/A` incremental USD.
+Preferences define agent defaults, exact provider overrides, and optional provider-scoped `modelIdRules`. A rule has exactly one literal `exact` or `prefix` matcher; exact wins, then the longest prefix. Invalid or duplicate exact rules warn and fall back to the provider policy. A rule may override `provider`, `billingMode`, `pricing`, and `budget`. Billing modes are `metered`, `subscription`, `credit`, `quota`, `local`, and `unknown`. Subscription-like modes report `N/A` incremental USD.
 
 ```jsonc
 {
+  "schemaVersion": 3,
   "agents": {
     "codex": {
       "budget": { "usd": 100, "period": "month" },
       "providers": {
         "openai": { "billingMode": "subscription" },
+        "litellm": {
+          "billingMode": "unknown",
+          "modelIdRules": [{ "prefix": "local.", "billingMode": "local" }]
+        },
         "amazon-bedrock": {
           "billingMode": "metered",
           "budget": { "usd": 25, "period": "week" },
@@ -92,7 +97,7 @@ Preferences define agent defaults and exact provider overrides. Billing modes ar
 }
 ```
 
-Budgets are positive USD values with `week`, `month`, `quarter`, or `year` calendar periods. A provider budget replaces the agent budget for that provider. Pacing is unavailable if its metered scope has unknown cost.
+A model-ID rule has one literal `exact` or `prefix` matcher and may override `provider`, `billingMode`, `pricing`, and `budget`; exact wins over prefix, then the longest prefix wins. Rules never discover a proxy upstream provider. Route exports retain both effective provider and observed proxy provider. Rule budgets pace independently from their parent provider budget. Budgets are positive USD values with `week`, `month`, `quarter`, or `year` calendar periods. A provider budget replaces the agent budget for that provider. Pacing is unavailable if its metered scope has unknown cost.
 
 ## Diagnostics and remedies
 

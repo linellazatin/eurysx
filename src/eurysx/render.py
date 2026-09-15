@@ -44,6 +44,35 @@ AGENT_NAMES = {
 }
 
 
+def _cost_status(data: Dict) -> str:
+    counts = data.get("cost_status_counts", {})
+    known = counts.get("recorded", 0) + counts.get("configured", 0)
+    if known and (counts.get("unknown") or counts.get("not_applicable")):
+        return "partial"
+    if known:
+        return "known"
+    if counts.get("unknown"):
+        return "unknown"
+    return "not applicable"
+
+
+def _cost_display(data: Dict) -> str:
+    status = _cost_status(data)
+    if status in ("unknown", "not applicable"):
+        return "N/A"
+    cost = f"${data['cost']:,.6f}"
+    return f"{cost} (partial)" if status == "partial" else cost
+
+
+def _print_table(headers, rows):
+    rows = [[str(value) for value in row] for row in rows]
+    widths = [max(len(header), *(len(row[index]) for row in rows)) for index, header in enumerate(headers)]
+    print("  ".join(f"{header:<{width}}" for header, width in zip(headers, widths)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(f"{value:<{width}}" for value, width in zip(row, widths)))
+
+
 def _print_grouped_section(title: str, breakdown: Dict, attribution_noun: str):
     """Terminal breakdown by session or project; 'unknown' bucket covers unattributed rows."""
     print(f"\n{'=' * 80}")
@@ -53,18 +82,18 @@ def _print_grouped_section(title: str, breakdown: Dict, attribution_noun: str):
         print(f"\nNo {attribution_noun} attribution available.")
         return
     rows = sorted(breakdown.items(), key=lambda item: item[1]['cost'], reverse=True)
-    for key, data in rows:
-        total = (data['input'] + data['output'] + data['cache_read'] + data['cache_write'])
-        print(f"\n{key}:")
-        print(f"  Input tokens:         {data['input']:>15,}")
-        print(f"  Output tokens:        {data['output']:>15,}")
-        print(f"  Cache read tokens:    {data['cache_read']:>15,}")
-        print(f"  Cache creation tokens:{data['cache_write']:>15,}")
-        print(f"  TOTAL TOKENS:         {total:>15,}")
-        print(f"  Known cost:           ${data['cost']:>14,.6f}")
-        print(f"  Model requests:       {data['model_requests']:>15,}")
-        print(f"  Model turns:          {data['model_turns']:>15,}")
-        print(f"  Model tool calls:     {data['model_tool_calls']:>15,}")
+    _print_table(
+        (attribution_noun.title(), "Tokens", "Known cost", "Cost status", "Requests", "Turns", "Tool calls"),
+        [
+            (
+                key,
+                f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
+                _cost_display(data), _cost_status(data),
+                f"{data['model_requests']:,}", f"{data['model_turns']:,}", f"{data['model_tool_calls']:,}",
+            )
+            for key, data in rows
+        ],
+    )
 
 
 def print_agent_header(agent: str, title: str = "USAGE ANALYSIS"):
@@ -122,19 +151,19 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         reverse=True
     )
     
-    for model_id, model_data in sorted_models:
-        total_model_tokens = (model_data['input'] + model_data['output'] + 
-                             model_data['cache_read'] + model_data['cache_write'])
-        print(f"\n{model_id}:")
-        print(f"  Input tokens:         {model_data['input']:>15,}")
-        print(f"  Output tokens:        {model_data['output']:>15,}")
-        print(f"  Cache read tokens:    {model_data['cache_read']:>15,}")
-        print(f"  Cache creation tokens:{model_data['cache_write']:>15,}")
-        print(f"  TOTAL TOKENS:         {total_model_tokens:>15,}")
-        print(f"  Known cost:           ${model_data['cost']:>14,.6f}")
-        print(f"  Model requests:       {model_data['model_requests']:>15,}")
-        print(f"  Model turns:          {model_data['model_turns']:>15,}")
-        print(f"  Model tool calls:     {model_data['model_tool_calls']:>15,}")
+    _print_table(
+        ("Model", "Tokens", "Known cost", "Cost status", "Requests", "Turns", "Tool calls"),
+        [
+            (
+                model_id,
+                f"{model_data['input'] + model_data['output'] + model_data['cache_read'] + model_data['cache_write']:,}",
+                _cost_display(model_data), _cost_status(model_data),
+                f"{model_data['model_requests']:,}", f"{model_data['model_turns']:,}",
+                f"{model_data['model_tool_calls']:,}",
+            )
+            for model_id, model_data in sorted_models
+        ],
+    )
 
     _print_grouped_section("BREAKDOWN BY SESSION", stats.session_breakdown, "session")
     _print_grouped_section("BREAKDOWN BY PROJECT", stats.project_breakdown, "project")
@@ -219,13 +248,14 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"\n{color}{'=' * 80}{Colors.reset}")
     print(f"{color}DAILY ACTIVITY{Colors.reset}")
     print(f"{color}{'=' * 80}{Colors.reset}")
-    print(f"{'Date':<12} {'Tokens':>15} {'Cost':>12}")
-    print("-" * 43)
-    
     if stats.daily_activity:
-        for date in sorted(stats.daily_activity.keys()):
-            data = stats.daily_activity[date]
-            print(f"{date:<12} {data['tokens']:>15,} ${data['cost']:>11,.6f}")
+        _print_table(
+            ("Date", "Tokens", "Known cost", "Cost status"),
+            [
+                (activity_date, f"{data['tokens']:,}", _cost_display(data), _cost_status(data))
+                for activity_date, data in sorted(stats.daily_activity.items())
+            ],
+        )
     else:
         print("No daily activity data available.")
     
@@ -264,9 +294,14 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
     print(f"Metered token coverage:                {coverage:>14}")
     if stats.unresolved_routes:
-        print("Unresolved metered routes:")
-        for route in stats.unresolved_routes:
-            print(f"  {route['provider']}/{route['model']}: {route['tokens']:,} tokens")
+        print("\nUnresolved metered routes:")
+        _print_table(
+            ("Provider", "Model", "Tokens", "Reason"),
+            [
+                (route["provider"], route["model"], f"{route['tokens']:,}", route["reason"])
+                for route in stats.unresolved_routes
+            ],
+        )
     for route, pacing in stats.pacing.items():
         if pacing["status"] == "unavailable":
             print(f"Budget pacing ({route}): unavailable ({pacing['reason']})")
@@ -276,15 +311,18 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         print(f"{billing_mode.title()} tokens:                  {tokens:>15,}")
 
     print("\nRoute breakdown:")
+    route_rows = []
     for route, route_data in sorted(stats.route_breakdown.items()):
-        print(f"  {route}: {route_data['tokens']:,} tokens, ${route_data['cost']:.6f}")
-    
-    print("\nKnown cost by top models:")
-    top_models = sorted_models[:5] if len(sorted_models) > 5 else sorted_models
-    for model_id, model_data in top_models:
-        if model_data['cost'] > 0:
-            pct = (model_data['cost'] / actual_cost * 100) if actual_cost > 0 else 0
-            print(f"  {model_id}: ${model_data['cost']:>12,.2f} ({pct:.1f}%)")
+        provider_model, mode = route.rsplit(" [", 1)
+        provider, model = provider_model.split("/", 1)
+        route_rows.append((
+            provider, ", ".join(route_data.get("observed_providers", [])), model, mode[:-1], f"{route_data['tokens']:,}",
+            _cost_display(route_data), _cost_status(route_data), f"{route_data['entries']:,}",
+        ))
+    _print_table(
+        ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status", "Entries"),
+        route_rows,
+    )
     source_paths = {
         "amazon-bedrock": "Eurysx cache/pricing-amazon-bedrock.json",
         "pi-models-store": "Eurysx cache/pricing-pi-models-store.json",
@@ -426,23 +464,25 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
 def build_csv_report(report: AnalysisReport) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(("agent", "provider", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls"))
+    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
     for agent, stats in sorted(report.agent_stats.items()):
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
-            writer.writerow((agent, provider, model, mode[:-1], data["tokens"], data["cost"], data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"]))
+            status = _cost_status(data)
+            cost = data["cost"] if status in ("known", "partial") else "N/A"
+            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
     return output.getvalue()
 
 
 def build_markdown_report(report: AnalysisReport) -> str:
     lines = ["# Eurysx report", "", f"Period: {report.period_label}"]
     for agent, stats in sorted(report.agent_stats.items()):
-        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Model | Billing mode | Tokens | Known cost |", "| --- | --- | --- | ---: | ---: |"]
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Cost status |", "| --- | --- | --- | --- | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
-            lines.append(f"| {provider} | {model} | {mode[:-1]} | {data['tokens']:,} | ${data['cost']:.6f} |")
+            lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_cost_status(data)} |")
     return "\n".join(lines) + "\n"
 
 

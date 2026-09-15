@@ -1,6 +1,6 @@
 {
   // Copy as config/preferences.jsonc in this Eurysx checkout.
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "agents": {
     "claude-code": {
       "billingMode": "unknown",
@@ -13,7 +13,10 @@
           "billingMode": "metered",
           "pricing": { "source": "amazon-bedrock", "otherSources": ["models-dev", "pi-models-store"] }
         },
-        "litellm": { "billingMode": "local" }
+        "litellm": {
+          "billingMode": "unknown",
+          "modelIdRules": [{ "prefix": "local.", "billingMode": "local" }]
+        }
       }
     },
     "opencode": {

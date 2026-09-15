@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.1] - Cost-status-safe breakdowns
+
+### Added
+
+- Provider-scoped model-ID rules and proxy-route provenance.
+
+### Fixed
+
+- Route, model, project, session, and daily breakdowns retain pricing status so unknown and non-metered usage renders as `N/A`, never as a free `$0` cost. Mixed known and unavailable cost is marked partial.
+
+### Changed
+
+- Terminal breakdowns use comparison tables. CSV and Markdown route exports include cost status; CSV emits `N/A` for unavailable known cost.
+
 ## [0.1.0] - Local observability, diagnostics, pacing, and stable exports
 
 ### Fixed
