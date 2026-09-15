@@ -1,4 +1,10 @@
-# Eurysx
+# eurysx
+
+<div align="center">
+
+[![eurysx version](https://img.shields.io/pypi/v/eurysx?logo=pypi&color=blue)](https://pypi.org/project/eurysx)
+
+</div>
 
 Local-first usage observability for Claude Code, OpenCode, Pi, and Codex.
 
@@ -6,12 +12,37 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.1.0 is a local CLI, not a hosted service.
+> Eurysx v0.1.1 is a local CLI, not a hosted service.
+
+## What the name means
+
+`Eurysx` is derived from *Euryphaessa*, an epithet associated with broad-shining
+light. Its `eury` root suggests a wide view; `s` evokes stats or sight, and `x`
+marks cross-agent work. It is a compact name for seeing usage across coding
+harnesses without pretending that their routes, prices, or records are
+interchangeable.
+
+## Our philosophy
+
+`eurysx` is built around a few principles:
+
+- Local history is evidence, not telemetry: usage stays on the machine and
+  sensitive session content is neither persisted nor reported.
+- Unknown stays unknown. Eurysx does not invent a price, provider route, or
+  billing mode when the available records cannot support one.
+- Recorded cost wins over policy. Configurations make user intent explicit;
+  they do not rewrite what a harness recorded.
+- One normalized view should preserve provenance. Comparable reports must still
+  show where data and pricing came from.
+- The tool remains a small, local CLI, not a hosted analytics service or an
+  agent-management platform.
+
+Eurysx makes agent usage visible without taking ownership of it.
 
 ## Install
 
 ```bash
-python3 -m pip install .
+pip3 install eurysx
 eurysx --help
 ```
 
@@ -84,14 +115,17 @@ relocating those two directories, for example to a removable development volume.
 
 ### `preferences.jsonc`: agent and provider policy
 
-`preferences.jsonc` declares a schema version 2 policy. An agent-level policy
+`preferences.jsonc` declares a schema version 3 policy. An agent-level policy
 applies to every model when the collector has no provider metadata. `providers`
-overrides that policy only for an exact recorded provider. There are no
-model-match rules.
+overrides that policy only for an exact recorded provider. A provider policy can
+add explicit `modelIdRules` using literal `exact` or `prefix` matchers. Exact
+wins; otherwise the longest matching prefix wins. Invalid or duplicate exact
+rules warn and use the provider policy. Rules may override `provider`,
+`billingMode`, `pricing`, and `budget`; Eurysx never infers an upstream proxy route.
 
 ```jsonc
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "agents": {
     "claude-code": {
       "provider": "amazon-bedrock",
@@ -108,7 +142,10 @@ model-match rules.
           "billingMode": "metered",
           "pricing": { "source": "amazon-bedrock", "otherSources": ["models-dev"] }
         },
-        "litellm": { "billingMode": "local" }
+        "litellm": {
+          "billingMode": "unknown",
+          "modelIdRules": [{ "prefix": "local.", "billingMode": "local" }]
+        }
       }
     }
   }
@@ -126,6 +163,7 @@ want its usage to remain unclassified. Supported agent keys are `claude-code`,
 | `provider` | Optional | Effective provider when the collector does not record one. Usually needed for an agent-level metered policy. |
 | `billingMode` | Optional | `metered`, `subscription`, `credit`, `quota`, `local`, or `unknown`. Omit it to let a matching provider policy decide; if no policy supplies it, Eurysx uses `unknown`. |
 | `providers` | Optional | Map of exact recorded provider names to policy objects. Provider-policy fields override the agent-level fields. |
+| `modelIdRules` | Optional | Provider-scoped list of one-key `exact` or `prefix` rules. A matching rule may override `provider`, `billingMode`, `pricing`, and `budget`. |
 | `pricing` | Optional | Pricing lookup policy. For a config-priced metered route, include at least one valid `source` or `otherSources` entry. |
 | `pricing.source` | Optional | Primary enabled source name from `pricing.jsonc`. |
 | `pricing.otherSources` | Optional | Ordered enabled fallback source names from `pricing.jsonc`. |
@@ -138,11 +176,11 @@ For an agent using more than one provider, omit agent-level `billingMode` rather
 than setting it to `unknown` or an empty value. JSON has no useful blank value
 here: `"billingMode": ""` is invalid policy data and is reported as unknown.
 For example, Codex can classify its recorded OpenAI route as `subscription`, its
-recorded Bedrock route as `metered`, and its recorded LiteLLM route as `local`.
+recorded Bedrock route as `metered`, and only LiteLLM model IDs matching an explicit `local.` rule as `local`.
 If a record has no provider, or its provider is absent from `providers`, its
 billing mode is `unknown` unless the agent-level policy defines one. Optional
 budgets use `{"usd": 100, "period": "month"}` under an agent or exact provider;
-invalid budgets disable pacing with a warning.
+invalid budgets disable pacing with a warning. Rule budgets pace independently from their parent provider budget.
 
 Billing modes describe incremental cost, not capability:
 
