@@ -1497,6 +1497,37 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(groups, {"openai": {"usd": 25.0, "period": "week"},
                                   None: {"usd": 100.0, "period": "month"}})
 
+    def test_invalid_model_id_rule_warns_and_uses_provider_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"exact": "local.qwen", "prefix": "local.", "billingMode": "local"},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage("litellm", "local.qwen")
+            preferences.apply(usage)
+
+        self.assertEqual(usage.billing_mode, "unknown")
+        self.assertTrue(preferences.warnings)
+
+    def test_duplicate_exact_model_id_rules_warn_and_use_provider_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"exact": "local.qwen", "billingMode": "local"},
+                    {"exact": "local.qwen", "billingMode": "subscription"},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage("litellm", "local.qwen")
+            preferences.apply(usage)
+
+        self.assertEqual(usage.billing_mode, "unknown")
+        self.assertTrue(preferences.warnings)
+
     def test_model_rule_budget_is_separate_from_provider_budget(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "preferences.jsonc"

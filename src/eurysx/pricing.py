@@ -479,16 +479,20 @@ class PreferencesResolver:
             if rules and not isinstance(rules, list):
                 self._warn(f"preferences {agent}.providers.{provider}.modelIdRules must be a list")
             else:
-                exact = [rule for rule in rules if isinstance(rule, dict) and rule.get("exact") == model_id]
-                prefixes = [rule for rule in rules if isinstance(rule, dict) and isinstance(rule.get("prefix"), str) and model_id.startswith(rule["prefix"])]
-                rule = exact[0] if exact else max(prefixes, key=lambda item: len(item["prefix"]), default=None)
+                valid = [rule for rule in rules if isinstance(rule, dict) and sum(bool(rule.get(key)) and isinstance(rule.get(key), str) for key in ("exact", "prefix")) == 1]
+                if len(valid) != len(rules):
+                    self._warn(f"preferences {agent}.providers.{provider}.modelIdRules has an invalid matcher")
+                exact = [rule for rule in valid if rule.get("exact") == model_id]
+                prefixes = [rule for rule in valid if isinstance(rule.get("prefix"), str) and model_id.startswith(rule["prefix"])]
+                if len(exact) > 1:
+                    self._warn(f"preferences {agent}.providers.{provider}.modelIdRules has duplicate exact rules")
+                    rule = None
+                else:
+                    rule = exact[0] if exact else max(prefixes, key=lambda item: len(item["prefix"]), default=None)
                 if rule:
-                    matcher = f"exact:{rule['exact']}" if rule in exact else f"prefix:{rule['prefix']}"
-                    if sum(bool(rule.get(key)) and isinstance(rule.get(key), str) for key in ("exact", "prefix")) != 1:
-                        self._warn(f"preferences {agent}.providers.{provider}.modelIdRules has an invalid matcher")
-                    else:
-                        policy.update({key: value for key, value in rule.items() if key in ("provider", "billingMode", "pricing", "budget")})
-                        policy["policyKey"] = f"{provider}/{matcher}"
+                    matcher = f"exact:{rule['exact']}" if exact else f"prefix:{rule['prefix']}"
+                    policy.update({key: value for key, value in rule.items() if key in ("provider", "billingMode", "pricing", "budget")})
+                    policy["policyKey"] = f"{provider}/{matcher}"
         billing_mode = policy.get("billingMode", "unknown")
         if billing_mode not in self.BILLING_MODES:
             self._warn(f"preferences {agent} has invalid billingMode; using unknown")

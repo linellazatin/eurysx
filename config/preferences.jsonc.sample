@@ -1,6 +1,6 @@
 {
   // Copy as config/preferences.jsonc in this Eurysx checkout.
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "agents": {
     "claude-code": {
       "billingMode": "unknown",
