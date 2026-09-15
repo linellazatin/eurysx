@@ -316,11 +316,11 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         provider_model, mode = route.rsplit(" [", 1)
         provider, model = provider_model.split("/", 1)
         route_rows.append((
-            provider, model, mode[:-1], f"{route_data['tokens']:,}",
+            provider, ", ".join(route_data.get("observed_providers", [])), model, mode[:-1], f"{route_data['tokens']:,}",
             _cost_display(route_data), _cost_status(route_data), f"{route_data['entries']:,}",
         ))
     _print_table(
-        ("Provider", "Model", "Billing mode", "Tokens", "Known cost", "Cost status", "Entries"),
+        ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status", "Entries"),
         route_rows,
     )
     source_paths = {
@@ -464,14 +464,14 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
 def build_csv_report(report: AnalysisReport) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(("agent", "provider", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
+    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
     for agent, stats in sorted(report.agent_stats.items()):
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
             status = _cost_status(data)
             cost = data["cost"] if status in ("known", "partial") else "N/A"
-            writer.writerow((agent, provider, model, mode[:-1], data["tokens"], cost, data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
+            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
     return output.getvalue()
 
 

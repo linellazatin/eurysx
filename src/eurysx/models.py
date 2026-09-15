@@ -34,6 +34,7 @@ class UsageEntry:
     model_turns: int = 0
     model_tool_calls: int = 0
     is_metric_only: bool = False
+    policy_key: Optional[str] = None
 
 
 @dataclass

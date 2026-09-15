@@ -434,14 +434,15 @@ class PreferencesResolver:
     def apply(self, usage):
         observed_provider = usage.observed_provider or usage.provider
         usage.observed_provider = observed_provider
-        policy = self._policy_for(usage.agent, observed_provider)
+        policy = self._policy_for(usage.agent, observed_provider, usage.model_id)
+        usage.policy_key = policy.pop("policyKey", observed_provider or usage.agent)
         usage.provider = policy.get("provider", observed_provider)
         usage.billing_mode = policy["billingMode"]
         usage.pricing_provider = usage.provider
         usage.pricing_model = usage.model_id
         usage.pricing_sources = policy.get("pricingSources", [])
 
-    def _policy_for(self, agent: str, provider: Optional[str]) -> Dict[str, Any]:
+    def _policy_for(self, agent: str, provider: Optional[str], model_id: str = "") -> Dict[str, Any]:
         agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
         agent_config = agents.get(agent, {}) if isinstance(agents, dict) else {}
         if not isinstance(agent_config, dict):
@@ -456,8 +457,22 @@ class PreferencesResolver:
         if provider_config is not None and not isinstance(provider_config, dict):
             self._warn(f"preferences {agent}.providers.{provider} must be an object")
         elif isinstance(provider_config, dict):
-            policy.update(provider_config)
+            policy.update({key: value for key, value in provider_config.items() if key != "modelIdRules"})
             policy.setdefault("provider", provider)
+            rules = provider_config.get("modelIdRules", [])
+            if rules and not isinstance(rules, list):
+                self._warn(f"preferences {agent}.providers.{provider}.modelIdRules must be a list")
+            else:
+                exact = [rule for rule in rules if isinstance(rule, dict) and rule.get("exact") == model_id]
+                prefixes = [rule for rule in rules if isinstance(rule, dict) and isinstance(rule.get("prefix"), str) and model_id.startswith(rule["prefix"])]
+                rule = exact[0] if exact else max(prefixes, key=lambda item: len(item["prefix"]), default=None)
+                if rule:
+                    matcher = f"exact:{rule['exact']}" if rule in exact else f"prefix:{rule['prefix']}"
+                    if sum(bool(rule.get(key)) and isinstance(rule.get(key), str) for key in ("exact", "prefix")) != 1:
+                        self._warn(f"preferences {agent}.providers.{provider}.modelIdRules has an invalid matcher")
+                    else:
+                        policy.update({key: value for key, value in rule.items() if key in ("provider", "billingMode", "pricing", "budget")})
+                        policy["policyKey"] = f"{provider}/{matcher}"
         billing_mode = policy.get("billingMode", "unknown")
         if billing_mode not in self.BILLING_MODES:
             self._warn(f"preferences {agent} has invalid billingMode; using unknown")

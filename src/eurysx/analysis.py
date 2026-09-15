@@ -106,7 +106,7 @@ class UsageAnalyzer:
         })
         daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0, 'cost_status_counts': {}})
         route_tokens = defaultdict(lambda: {
-            'tokens': 0, 'cost': 0.0, 'entries': 0, 'cost_status_counts': {},
+            'tokens': 0, 'cost': 0.0, 'entries': 0, 'cost_status_counts': {}, 'observed_providers': [],
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0,
         })
         sessions = set()
@@ -145,6 +145,9 @@ class UsageAnalyzer:
                 )
             route_data['tokens'] += usage.total_tokens
             route_data['entries'] += 1
+            observed = usage.observed_provider or usage.provider
+            if observed and observed not in route_data['observed_providers']:
+                route_data['observed_providers'].append(observed)
             for bucket in (
                 route_data, model_tokens[usage.model_id],
                 project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'],

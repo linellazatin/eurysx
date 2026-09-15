@@ -1027,11 +1027,11 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIn("partial", terminal.getvalue())
         csv_report = app.build_csv_report(report)
         self.assertIn(
-            "pi,provider,unknown-model,metered,10,N/A,1,0,0,0,unknown",
+            "pi,provider,provider,unknown-model,metered,10,N/A,1,0,0,0,unknown",
             csv_report,
         )
         self.assertIn(
-            "pi,provider,partial-model,metered,90,1.5,2,0,0,0,partial",
+            "pi,provider,provider,partial-model,metered,90,1.5,2,0,0,0,partial",
             csv_report,
         )
         self.assertIn(
@@ -1427,6 +1427,27 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.pricing_sources,
                          ["amazon-bedrock", "models-dev", "pi-models-store"])
 
+    def test_model_id_rules_override_only_matching_litellm_models(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"billingMode": "unknown", "modelIdRules": [
+                    {"prefix": "local.", "billingMode": "local"},
+                    {"exact": "local.cloud", "billingMode": "subscription"},
+                    {"prefix": "bedrock.", "provider": "amazon-bedrock", "billingMode": "metered", "pricing": {"source": "amazon-bedrock"}},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            local = self._usage("litellm", "local.qwen")
+            exact = self._usage("litellm", "local.cloud")
+            cloud = self._usage("litellm", "bedrock.claude")
+            unknown = self._usage("litellm", "gpt")
+            for usage in (local, exact, cloud, unknown):
+                preferences.apply(usage)
+
+        self.assertEqual((local.billing_mode, exact.billing_mode, unknown.billing_mode), ("local", "subscription", "unknown"))
+        self.assertEqual((cloud.provider, cloud.billing_mode, cloud.pricing_sources), ("amazon-bedrock", "metered", ["amazon-bedrock"]))
+
     def test_subscription_usage_is_not_priced_even_when_price_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1810,7 +1831,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "quarterly_cost": 112.5,
         "requests_per_turn": 1.0,
         "route_breakdown": {"openai/model [metered]": {
-            "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "model_requests": 1,
+            "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
         }},
         "scope_warnings": [],
