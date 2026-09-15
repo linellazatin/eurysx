@@ -478,11 +478,11 @@ def build_csv_report(report: AnalysisReport) -> str:
 def build_markdown_report(report: AnalysisReport) -> str:
     lines = ["# Eurysx report", "", f"Period: {report.period_label}"]
     for agent, stats in sorted(report.agent_stats.items()):
-        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Model | Billing mode | Tokens | Known cost | Cost status |", "| --- | --- | --- | ---: | ---: | --- |"]
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Cost status |", "| --- | --- | --- | --- | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
-            lines.append(f"| {provider} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_cost_status(data)} |")
+            lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_cost_status(data)} |")
     return "\n".join(lines) + "\n"
 
 

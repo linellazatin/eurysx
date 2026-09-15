@@ -1035,7 +1035,7 @@ class CostCoverageTests(unittest.TestCase):
             csv_report,
         )
         self.assertIn(
-            "| provider | unknown-model | metered | 10 | N/A | unknown |",
+            "| provider | provider | unknown-model | metered | 10 | N/A | unknown |",
             app.build_markdown_report(report),
         )
 
