@@ -35,6 +35,7 @@ class UsageEntry:
     model_tool_calls: int = 0
     is_metric_only: bool = False
     policy_key: Optional[str] = None
+    policy_budget: Optional[Dict[str, Any]] = None
 
 
 @dataclass

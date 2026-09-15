@@ -431,11 +431,27 @@ class PreferencesResolver:
             groups[None] = budget
         return groups
 
+    def budget_groups_for_usages(self, usages):
+        groups = {}
+        for usage in usages:
+            budget = usage.policy_budget
+            if not isinstance(budget, dict):
+                continue
+            try:
+                usd = float(budget.get("usd"))
+            except (TypeError, ValueError):
+                usd = 0
+            period = budget.get("period")
+            if usd > 0 and period in {"week", "month", "quarter", "year"}:
+                groups[usage.policy_key] = {"usd": usd, "period": period}
+        return groups
+
     def apply(self, usage):
         observed_provider = usage.observed_provider or usage.provider
         usage.observed_provider = observed_provider
         policy = self._policy_for(usage.agent, observed_provider, usage.model_id)
         usage.policy_key = policy.pop("policyKey", observed_provider or usage.agent)
+        usage.policy_budget = policy.get("budget")
         usage.provider = policy.get("provider", observed_provider)
         usage.billing_mode = policy["billingMode"]
         usage.pricing_provider = usage.provider
@@ -448,7 +464,7 @@ class PreferencesResolver:
         if not isinstance(agent_config, dict):
             self._warn(f"preferences {agent} must be an object; using unknown defaults")
             return {"billingMode": "unknown"}
-        policy = {key: agent_config[key] for key in ("provider", "billingMode", "pricing")
+        policy = {key: agent_config[key] for key in ("provider", "billingMode", "pricing", "budget")
                   if key in agent_config}
         providers = agent_config.get("providers", {})
         if providers and not isinstance(providers, dict):
