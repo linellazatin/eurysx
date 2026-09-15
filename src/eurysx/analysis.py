@@ -94,19 +94,19 @@ class UsageAnalyzer:
         
         model_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
-            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+            'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
         project_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
-            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+            'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
         session_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
-            'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+            'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
-        daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0})
+        daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0, 'cost_status_counts': {}})
         route_tokens = defaultdict(lambda: {
-            'tokens': 0, 'cost': 0.0, 'entries': 0,
+            'tokens': 0, 'cost': 0.0, 'entries': 0, 'cost_status_counts': {},
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0,
         })
         sessions = set()
@@ -145,6 +145,13 @@ class UsageAnalyzer:
                 )
             route_data['tokens'] += usage.total_tokens
             route_data['entries'] += 1
+            for bucket in (
+                route_data, model_tokens[usage.model_id],
+                project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'],
+            ):
+                bucket['cost_status_counts'][usage.cost_status] = (
+                    bucket['cost_status_counts'].get(usage.cost_status, 0) + 1
+                )
             stats.cost_status_counts[usage.cost_status] = (
                 stats.cost_status_counts.get(usage.cost_status, 0) + 1
             )
@@ -197,7 +204,11 @@ class UsageAnalyzer:
                 if usage_date:
                     date_str = usage_date.strftime('%Y-%m-%d')
                     daily_tokens[date_str]['tokens'] += usage.total_tokens
-                    daily_tokens[date_str]['cost'] += usage.cost
+                    if usage.cost_status not in ("unknown", "not_applicable"):
+                        daily_tokens[date_str]['cost'] += usage.cost
+                    daily_tokens[date_str]['cost_status_counts'][usage.cost_status] = (
+                        daily_tokens[date_str]['cost_status_counts'].get(usage.cost_status, 0) + 1
+                    )
         
         stats.sessions_count = len(sessions)
         unresolved = {}
