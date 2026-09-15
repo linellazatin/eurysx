@@ -1497,6 +1497,25 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(groups, {"openai": {"usd": 25.0, "period": "week"},
                                   None: {"usd": 100.0, "period": "month"}})
 
+    def test_model_rule_budget_is_separate_from_provider_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {
+                "litellm": {"budget": {"usd": 100, "period": "month"}, "modelIdRules": [
+                    {"prefix": "local.", "billingMode": "local", "budget": {"usd": 10, "period": "week"}},
+                ]},
+            }}}}))
+            preferences = app.PreferencesResolver(path)
+            proxy = self._usage("litellm", "cloud.model")
+            local = self._usage("litellm", "local.qwen")
+            preferences.apply(proxy)
+            preferences.apply(local)
+
+        self.assertEqual(preferences.budget_groups_for_usages([proxy, local]), {
+            "litellm": {"usd": 100.0, "period": "month"},
+            "litellm/prefix:local.": {"usd": 10.0, "period": "week"},
+        })
+
     def test_invalid_provider_policy_emits_a_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "preferences.jsonc"
