@@ -15,7 +15,7 @@ from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
 from .render import (
-    Colors, build_csv_report, build_html_report, build_json_report, build_markdown_report, print_agent_header,
+    Colors, build_csv_report, build_html_reports, build_json_report, build_markdown_report, print_agent_header,
     print_single_agent_report, print_summary_comparison,
 )
 from .store import UsageStore
@@ -140,7 +140,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--refresh-pricing", action="store_true",
                         help="Force refresh of enabled remote pricing sources")
     args = parser.parse_args(_promote_command_after_agent(argv))
-    if args.format != "json" and not args.output:
+    if args.format in ("csv", "markdown") and not args.output:
         parser.error("--format requires --output")
     if args.end_date and not args.start_date:
         parser.error("--to requires --from")
@@ -452,16 +452,25 @@ def main(argv=None):
     if len(agent_data) > 1:
         print_summary_comparison(report)
 
-    if args.output:
+    if args.format == "html":
+        output_dir = Path(args.output) if args.output else Path(
+            f"usage-analysis-report-{datetime.now():%Y%m%d-%H%M%S}"
+        )
+        try:
+            output_dir.mkdir(parents=True)
+        except FileExistsError:
+            print(f"Error: HTML report directory already exists: {output_dir}", file=sys.stderr)
+            return
+        for name, content in build_html_reports(report).items():
+            (output_dir / name).write_text(content)
+    elif args.output:
         with open(args.output, "w") as output_file:
             if args.format == "json":
                 json.dump(build_json_report(report), output_file, indent=2)
             elif args.format == "csv":
                 output_file.write(build_csv_report(report))
-            elif args.format == "markdown":
-                output_file.write(build_markdown_report(report))
             else:
-                output_file.write(build_html_report(report))
+                output_file.write(build_markdown_report(report))
 
 
 if __name__ == "__main__":

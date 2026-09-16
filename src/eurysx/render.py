@@ -65,13 +65,44 @@ def _cost_display(data: Dict) -> str:
     return f"{cost} (partial)" if status == "partial" else cost
 
 
+def _comparison_leaders(report: AnalysisReport) -> Dict:
+    """Return deterministic token leaders from the existing route breakdowns."""
+    agents = {}
+    combined = {}
+    for agent, stats in sorted(report.agent_stats.items()):
+        routes = []
+        for route, data in stats.route_breakdown.items():
+            provider_model, _ = route.rsplit(" [", 1)
+            provider, model = provider_model.split("/", 1)
+            leader = {"provider": provider, "model": model, "tokens": data["tokens"]}
+            routes.append(leader)
+            combined[(provider, model)] = combined.get((provider, model), 0) + data["tokens"]
+        if routes:
+            agents[agent] = min(routes, key=lambda item: (-item["tokens"], item["provider"], item["model"]))
+    return {
+        "agents": agents,
+        "combined": [
+            {"provider": provider, "model": model, "tokens": tokens}
+            for (provider, model), tokens in sorted(combined.items(), key=lambda item: (-item[1], *item[0]))[:3]
+        ],
+    }
+
+
 def _print_table(headers, rows):
     rows = [[str(value) for value in row] for row in rows]
-    widths = [max(len(header), *(len(row[index]) for row in rows)) for index, header in enumerate(headers)]
+    widths = [max([len(header), *(len(row[index]) for row in rows)]) for index, header in enumerate(headers)]
     print("  ".join(f"{header:<{width}}" for header, width in zip(headers, widths)))
     print("  ".join("-" * width for width in widths))
     for row in rows:
         print("  ".join(f"{value:<{width}}" for value, width in zip(row, widths)))
+
+
+def _print_metrics(rows):
+    rows = [(f"{label}:", str(value)) for label, value in rows]
+    label_width = max(len(label) for label, _ in rows)
+    value_width = max(len(value) for _, value in rows)
+    for label, value in rows:
+        print(f"{label:<{label_width}}  {value:>{value_width}}")
 
 
 def _print_grouped_section(title: str, breakdown: Dict, attribution_noun: str):
@@ -131,15 +162,18 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}TOTAL USAGE (ALL MODELS){Colors.reset}")
     print(f"{color}{'=' * 80}{Colors.reset}")
     
-    print(f"\nModel requests:        {stats.total_model_requests:>15,}")
-    print(f"Model turns:           {stats.total_model_turns:>15,}")
-    print(f"Model tool calls:      {stats.total_model_tool_calls:>15,}")
-    print(f"\nInput tokens:          {stats.total_input_tokens:>15,}")
-    print(f"Output tokens:         {stats.total_output_tokens:>15,}")
-    print(f"Cache read tokens:     {stats.total_cache_read_tokens:>15,}")
-    print(f"Cache creation tokens: {stats.total_cache_write_tokens:>15,}")
-    print(f"GRAND TOTAL TOKENS:    {stats.total_tokens:>15,}")
-    print(f"\nKNOWN COST:            ${stats.known_cost:>14,.6f}")
+    print()
+    _print_metrics((
+        ("Model requests", f"{stats.total_model_requests:,}"),
+        ("Model turns", f"{stats.total_model_turns:,}"),
+        ("Model tool calls", f"{stats.total_model_tool_calls:,}"),
+        ("Input tokens", f"{stats.total_input_tokens:,}"),
+        ("Output tokens", f"{stats.total_output_tokens:,}"),
+        ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"),
+        ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"),
+        ("GRAND TOTAL TOKENS", f"{stats.total_tokens:,}"),
+        ("KNOWN COST", f"${stats.known_cost:,.6f}"),
+    ))
     
     # ===== BREAKDOWN BY MODEL SECTION =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -181,12 +215,15 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     active_cost = f"${stats.total_cost / days_active:,.6f}" if days_active else "n/a"
     active_tokens = f"{stats.total_tokens / days_active:,.0f}" if days_active else "n/a"
 
-    print(f"\nDaily (across all {total_days} days):        ${stats.daily_cost:>14,.6f}")
-    print(f"Daily (active days only, {days_active} days): {active_cost:>15}")
-    print(f"Weekly (across {total_days/7:.1f} weeks):            ${stats.weekly_cost:>14,.6f}")
-    print(f"Monthly (30-day avg, {total_days/30:.1f} months):      ${stats.monthly_cost:>14,.6f}")
-    print(f"Quarterly (90-day avg, {total_days/90:.1f} quarters): ${stats.quarterly_cost:>14,.6f}")
-    print(f"Yearly (365-day avg, {total_days/365:.2f} years):      ${stats.yearly_cost:>14,.6f}")
+    print()
+    _print_metrics((
+        (f"Daily (across all {total_days} days)", f"${stats.daily_cost:,.6f}"),
+        (f"Daily (active days only, {days_active} days)", active_cost),
+        (f"Weekly (across {total_days / 7:.1f} weeks)", f"${stats.weekly_cost:,.6f}"),
+        (f"Monthly (30-day avg, {total_days / 30:.1f} months)", f"${stats.monthly_cost:,.6f}"),
+        (f"Quarterly (90-day avg, {total_days / 90:.1f} quarters)", f"${stats.quarterly_cost:,.6f}"),
+        (f"Yearly (365-day avg, {total_days / 365:.2f} years)", f"${stats.yearly_cost:,.6f}"),
+    ))
     
     # ===== TOKEN VOLUME PER TIME PERIOD =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -199,12 +236,15 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     token_quarterly = token_daily_avg * 90
     token_yearly = token_daily_avg * 365
     
-    print(f"\nDaily (across all days):     {token_daily_avg:>15,.0f} tokens")
-    print(f"Daily (active days only):    {active_tokens:>15} tokens")
-    print(f"Weekly:                      {token_weekly:>15,.0f} tokens")
-    print(f"Monthly (30-day avg):        {token_monthly:>15,.0f} tokens")
-    print(f"Quarterly (90-day avg):      {token_quarterly:>15,.0f} tokens")
-    print(f"Yearly (365-day avg):        {token_yearly:>15,.0f} tokens")
+    print()
+    _print_metrics((
+        ("Daily (across all days)", f"{token_daily_avg:,.0f} tokens"),
+        ("Daily (active days only)", f"{active_tokens} tokens"),
+        ("Weekly", f"{token_weekly:,.0f} tokens"),
+        ("Monthly (30-day avg)", f"{token_monthly:,.0f} tokens"),
+        ("Quarterly (90-day avg)", f"{token_quarterly:,.0f} tokens"),
+        ("Yearly (365-day avg)", f"{token_yearly:,.0f} tokens"),
+    ))
 
     # ===== MODEL ACTIVITY VOLUME PER TIME PERIOD =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -265,10 +305,12 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}SUMMARY STATISTICS{Colors.reset}")
     print(f"{color}{'=' * 80}{Colors.reset}")
     
-    print(f"\nTotal sessions: {stats.sessions_count}"
-          + (" attributed (+ unattributed rows)" if "unknown" in stats.session_breakdown else ""))
-    print(f"Total messages (usage entries): {stats.usage_entries}")
-    print(f"Unique models used: {len(stats.unique_models)}")
+    print()
+    _print_metrics((
+        ("Total sessions", f"{stats.sessions_count}" + (" attributed (+ unattributed rows)" if "unknown" in stats.session_breakdown else "")),
+        ("Total messages (usage entries)", f"{stats.usage_entries:,}"),
+        ("Unique models used", f"{len(stats.unique_models):,}"),
+    ))
     
     # ===== CACHE EFFECTIVENESS =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -276,11 +318,13 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}{'=' * 80}{Colors.reset}")
     
     total_cache_tokens = stats.total_cache_read_tokens + stats.total_cache_write_tokens
+    cache_rows = []
     if stats.cache_read_ratio is not None:
-        print(f"Cache read ratio: {stats.cache_read_ratio:.1%} ({stats.total_cache_read_tokens:,} / {total_cache_tokens:,})")
-
+        cache_rows.append(("Cache read ratio", f"{stats.cache_read_ratio:.1%} ({stats.total_cache_read_tokens:,} / {total_cache_tokens:,})"))
     if stats.cache_efficiency_ratio is not None:
-        print(f"Cache efficiency ratio: {stats.cache_efficiency_ratio:.1f}:1")
+        cache_rows.append(("Cache efficiency ratio", f"{stats.cache_efficiency_ratio:.1f}:1"))
+    if cache_rows:
+        _print_metrics(cache_rows)
     
     # ===== COST ANALYSIS =====
     print(f"\n{color}{'=' * 80}{Colors.reset}")
@@ -288,12 +332,16 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}{'=' * 80}{Colors.reset}")
     
     actual_cost = stats.known_cost
-    
-    print(f"\nKnown reported or estimated cost:     ${actual_cost:>14,.6f}")
-    print(f"Unknown-cost entries:                  {stats.unknown_cost_count:>15,}")
-    print(f"Unknown metered-cost tokens:          {stats.unknown_cost_tokens:>15,}")
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
-    print(f"Metered token coverage:                {coverage:>14}")
+    cost_rows = [
+        ("Known reported or estimated cost", f"${actual_cost:,.6f}"),
+        ("Unknown-cost entries", f"{stats.unknown_cost_count:,}"),
+        ("Unknown metered-cost tokens", f"{stats.unknown_cost_tokens:,}"),
+        ("Metered token coverage", coverage),
+    ]
+    cost_rows.extend((f"{billing_mode.title()} tokens", f"{tokens:,}") for billing_mode, tokens in sorted(stats.non_metered_tokens.items()))
+    print()
+    _print_metrics(cost_rows)
     if stats.unresolved_routes:
         print("\nUnresolved metered routes:")
         _print_table(
@@ -308,9 +356,6 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
             print(f"Budget pacing ({route}): unavailable ({pacing['reason']})")
         else:
             print(f"Budget pacing ({route}): {pacing['status']} (${pacing['spent_usd']:.2f} / ${pacing['budget_usd']:.2f})")
-    for billing_mode, tokens in sorted(stats.non_metered_tokens.items()):
-        print(f"{billing_mode.title()} tokens:                  {tokens:>15,}")
-
     print("\nRoute breakdown:")
     route_rows = []
     for route, route_data in sorted(stats.route_breakdown.items()):
@@ -414,6 +459,23 @@ def print_summary_comparison(report: AnalysisReport):
         f"${combined_cost:>14,.2f}"
     )
     print("=" * 105)
+    leaders = _comparison_leaders(report)
+    print("\nTOKEN LEADERS")
+    _print_table(
+        ("Agent", "Provider", "Model", "Tokens"),
+        [
+            (AGENT_NAMES.get(agent, agent), leader["provider"], leader["model"], f"{leader['tokens']:,}")
+            for agent, leader in leaders["agents"].items()
+        ],
+    )
+    print("\nCOMBINED TOP 3")
+    _print_table(
+        ("Rank", "Provider", "Model", "Tokens"),
+        [
+            (index, leader["provider"], leader["model"], f"{leader['tokens']:,}")
+            for index, leader in enumerate(leaders["combined"], 1)
+        ],
+    )
 
 
 def _agent_stats_dict(stats: AgentStats) -> Dict:
@@ -477,7 +539,13 @@ def build_csv_report(report: AnalysisReport) -> str:
 
 
 def build_markdown_report(report: AnalysisReport) -> str:
-    lines = ["# Eurysx report", "", f"Period: {report.period_label}"]
+    lines = ["# Eurysx report", "", f"Period: {report.period_label}", "", "## Token leaders", "", "| Agent | Provider | Model | Tokens |", "| --- | --- | --- | ---: |"]
+    leaders = _comparison_leaders(report)
+    for agent, leader in leaders["agents"].items():
+        lines.append(f"| {agent} | {leader['provider']} | {leader['model']} | {leader['tokens']:,} |")
+    lines += ["", "### Combined top 3", "", "| Rank | Provider | Model | Tokens |", "| ---: | --- | --- | ---: |"]
+    for index, leader in enumerate(leaders["combined"], 1):
+        lines.append(f"| {index} | {leader['provider']} | {leader['model']} | {leader['tokens']:,} |")
     for agent, stats in sorted(report.agent_stats.items()):
         lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Cost status |", "| --- | --- | --- | --- | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
@@ -487,76 +555,122 @@ def build_markdown_report(report: AnalysisReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_html_report(report: AnalysisReport) -> str:
-    """Render a standalone, metadata-only local report."""
+def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
+    """Render a self-contained local HTML bundle from one analysis result."""
     def text(value) -> str:
         return html.escape(str(value))
 
-    def table(headers, rows) -> str:
-        return (
-            "<table><thead><tr>" + "".join(f"<th>{text(header)}</th>" for header in headers)
-            + "</tr></thead><tbody>"
+    def table(headers, rows, sortable=False) -> str:
+        header = (
+            f'<th aria-sort="none" role="button" tabindex="0">{text(value)}</th>'
+            if sortable else f"<th>{text(value)}</th>"
+            for value in headers
+        )
+        content = (
+            ('<table class="sortable">' if sortable else "<table>") + "<thead><tr>"
+            + "".join(header) + "</tr></thead><tbody>"
             + "".join("<tr>" + "".join(f"<td>{text(value)}</td>" for value in row) + "</tr>" for row in rows)
             + "</tbody></table>"
         )
+        return f'<div class="table-scroll">{content}</div>' if sortable else content
 
-    sections = [
-        "<section><h2>Overview</h2>" + table(
-            ("Agent", "Tokens", "Known cost", "Entries"),
-            [
-                (agent, f"{stats.total_tokens:,}", _cost_display({
-                    "cost": stats.known_cost, "cost_status_counts": stats.cost_status_counts,
-                }), f"{stats.usage_entries:,}")
-                for agent, stats in sorted(report.agent_stats.items())
-            ],
-        ) + "</section>",
-    ]
-    for agent, stats in sorted(report.agent_stats.items()):
-        sections.extend((
-            f"<section><h2>Daily activity: {text(agent)}</h2>" + table(
-                ("Date", "Tokens", "Known cost", "Cost status"),
-                [(day, f"{data['tokens']:,}", _cost_display(data), _cost_status(data))
-                 for day, data in sorted(stats.daily_activity.items())],
-            ) + "</section>",
-            f"<section><h2>By model: {text(agent)}</h2>" + table(
-                ("Model", "Tokens", "Known cost", "Cost status"),
-                [(model, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
-                  _cost_display(data), _cost_status(data))
-                 for model, data in sorted(stats.model_breakdown.items())],
-            ) + "</section>",
-            f"<section><h2>Projects: {text(agent)}</h2>" + table(
-                ("Project", "Tokens", "Known cost", "Cost status"),
-                [(project, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
-                  _cost_display(data), _cost_status(data))
-                 for project, data in sorted(stats.project_breakdown.items())],
-            ) + "</section>",
-            f"<section><h2>Sessions: {text(agent)}</h2>" + table(
-                ("Session", "Tokens", "Known cost", "Cost status"),
-                [(session, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
-                  _cost_display(data), _cost_status(data))
-                 for session, data in sorted(stats.session_breakdown.items())],
-            ) + "</section>",
-            f"<section><h2>Pricing provenance: {text(agent)}</h2>" + table(
-                ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"),
-                [
-                    (provider_model.split("/", 1)[0], ", ".join(data.get("observed_providers", [])),
-                     provider_model.split("/", 1)[1], mode[:-1], f"{data['tokens']:,}",
-                     _cost_display(data), _cost_status(data))
-                    for route, data in sorted(stats.route_breakdown.items())
-                    for provider_model, mode in [route.rsplit(" [", 1)]
-                ],
-            ) + table(
-                ("Pricing source", "Fetched at"),
-                [
-                    (source, stats.pricing_fetched_at.get(source, "N/A"))
-                    for source in sorted(stats.pricing_sources) or ["No resolved source"]
-                ],
-            ) + "</section>",
-        ))
-    return """<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Eurysx report</title><style>body{max-width:1100px;margin:2rem auto;padding:0 1rem;background:#101315;color:#e8e5df;font:15px system-ui,sans-serif}h1,h2{color:#f4c95d}section{margin:2rem 0}table{width:100%;border-collapse:collapse}th,td{padding:.5rem;text-align:left;border-bottom:1px solid #3a3f42}th{color:#aeb8bb}td{font-variant-numeric:tabular-nums}</style></head><body>""" + (
-        f"<h1>Eurysx report</h1><p>Period: {text(report.period_label)}</p>"
-        "<h2>By agent</h2>" + sections[0] + "".join(sections[1:]) + "</body></html>"
+    def section(title, content, open=False, meta=None) -> str:
+        label = text(title) + (f'<span class="section-meta">{text(meta)}</span>' if meta else "")
+        return f"<details{' open' if open else ''}><summary>{label}</summary>{content}</details>"
+
+    def cost(stats, value) -> str:
+        return _cost_display({"cost": value, "cost_status_counts": stats.cost_status_counts})
+
+    def cost_context(stats) -> str:
+        modes = sorted(stats.non_metered_tokens)
+        if modes:
+            return "Incremental cost unavailable for " + " and ".join(modes) + " usage."
+        status = _cost_status({"cost_status_counts": stats.cost_status_counts})
+        if status == "partial":
+            return "Known cost excludes unavailable routes."
+        if status == "unknown":
+            return "Metered cost could not be resolved."
+        return "All displayed costs are known."
+
+    agents = sorted(report.agent_stats.items())
+    nav = [("SUMMARY", "index.html"), *[(AGENT_NAMES.get(agent, agent), f"{agent}.html") for agent, _ in agents]]
+
+    def page(title, active, body) -> str:
+        links = "".join(
+            f'<a href="{href}"' + (' aria-current="page"' if href == active else '') + f">{text(label)}</a>"
+            for label, href in nav
+        )
+        return """<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>""" + text(title) + """</title><style>:root{--ink:#0c1520;--panel:#132334;--line:#31465a;--text:#e7eef5;--muted:#9fb0c1;--accent:#69d2e7;--signal:#f2bc5e}body{margin:0;background:var(--ink);color:var(--text);font:15px system-ui,sans-serif}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);max-width:1400px;margin:auto}aside{padding:2rem 1rem;background:var(--panel);min-height:100vh}aside a{display:block;padding:.6rem;color:var(--muted);text-decoration:none;border-left:2px solid transparent}aside a[aria-current=page]{color:var(--accent);border-color:var(--accent)}main{padding:2rem;min-width:0}h1{margin:.15rem 0;color:var(--accent);letter-spacing:-.03em}.eyebrow{margin:0;color:var(--muted);font-size:.75rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;margin:1.5rem 0;background:var(--line);border:1px solid var(--line)}.insight{padding:1rem;background:var(--panel)}.insight strong,.insight span{display:block}.insight strong{margin:.3rem 0;font-size:1.15rem}.insight span{color:var(--muted)}section,details{margin:1rem 0}summary{display:flex;justify-content:space-between;gap:1rem;padding:.75rem 0;color:var(--accent);font-size:1.1rem;font-weight:700;cursor:pointer}.section-meta{color:var(--muted);font-size:.8rem;font-weight:400}table{width:100%;border-collapse:collapse}th,td{padding:.55rem;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.8rem;text-transform:uppercase}table.sortable th{cursor:pointer}.table-scroll{max-width:100%;overflow-x:auto}table.sortable{min-width:650px}th:focus,summary:focus{outline:2px solid var(--signal);outline-offset:2px}td{font-variant-numeric:tabular-nums}@media(max-width:700px){.layout{display:block}aside{min-height:auto}main{padding:1.25rem}.summary-grid{grid-template-columns:1fr}summary{font-size:1rem}}</style></head><body><div class=\"layout\"><aside><strong>Eurysx</strong>""" + links + "</aside><main>" + body + "</main></div><script>document.querySelectorAll('table.sortable').forEach(table=>{const headers=table.querySelectorAll('th');const value=cell=>{const text=cell.textContent.trim();if(!text||text==='N/A')return null;if(/^\\d{4}-\\d{2}-\\d{2}$/.test(text))return text;const number=text.replace(/[$,%]/g,'').match(/^-?[\\d,.]+/);return number?Number(number[0].replace(/,/g,'')):text.toLowerCase()};const sort=index=>{const header=headers[index];const ascending=header.getAttribute('aria-sort')!=='ascending';headers.forEach(item=>item.setAttribute('aria-sort','none'));header.setAttribute('aria-sort',ascending?'ascending':'descending');[...table.tBodies[0].rows].sort((left,right)=>{const a=value(left.cells[index]),b=value(right.cells[index]);if(a===null)return 1;if(b===null)return -1;return(typeof a==='number'&&typeof b==='number'?a-b:String(a).localeCompare(String(b)))*(ascending?1:-1)}).forEach(row=>table.tBodies[0].append(row))};headers.forEach((header,index)=>{header.addEventListener('click',()=>sort(index));header.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();sort(index)}})})});</script></body></html>"
+
+    overview_rows = []
+    combined = {"tokens": 0, "requests": 0, "turns": 0, "tools": 0, "cost": 0.0, "daily": 0.0, "counts": {}}
+    for agent, stats in agents:
+        overview_rows.append((AGENT_NAMES.get(agent, agent), f"{stats.total_tokens:,}",
+                              f"{stats.total_model_requests:,}", f"{stats.total_model_turns:,}",
+                              f"{stats.total_model_tool_calls:,}", cost(stats, stats.known_cost),
+                              cost(stats, stats.daily_cost)))
+        combined["tokens"] += stats.total_tokens
+        combined["requests"] += stats.total_model_requests
+        combined["turns"] += stats.total_model_turns
+        combined["tools"] += stats.total_model_tool_calls
+        combined["cost"] += stats.known_cost
+        combined["daily"] += stats.daily_cost
+        for status, count in stats.cost_status_counts.items():
+            combined["counts"][status] = combined["counts"].get(status, 0) + count
+    combined_cost = _cost_display({"cost": combined["cost"], "cost_status_counts": combined["counts"]})
+    combined_daily = _cost_display({"cost": combined["daily"], "cost_status_counts": combined["counts"]})
+    overview_rows.append(("COMBINED TOTAL", f"{combined['tokens']:,}", f"{combined['requests']:,}",
+                          f"{combined['turns']:,}", f"{combined['tools']:,}", combined_cost, combined_daily))
+    leaders = _comparison_leaders(report)
+    leading_agent, leading_stats = max(agents, key=lambda item: item[1].total_tokens)
+    insights = (
+        '<p class="eyebrow">At a glance</p><h1>Usage overview</h1>'
+        f'<p>Period: {text(report.period_label)}</p><div class="summary-grid">'
+        f'<div class="insight"><span>Most usage</span><strong>{text(AGENT_NAMES.get(leading_agent, leading_agent))}</strong><span>{leading_stats.total_tokens:,} tokens</span></div>'
+        f'<div class="insight"><span>Known cost</span><strong>{text(combined_cost)}</strong><span>Across all analyzed harnesses</span></div>'
+        f'<div class="insight"><span>Harnesses analyzed</span><strong>{len(agents)}</strong><span>Local sources only</span></div></div>'
     )
+    leader_tables = "<section><h2>TOKEN LEADERS</h2>" + table(
+        ("Agent", "Provider", "Model", "Tokens"),
+        [(AGENT_NAMES.get(agent, agent), leader["provider"], leader["model"], f"{leader['tokens']:,}") for agent, leader in leaders["agents"].items()],
+    ) + "<h3>COMBINED TOP 3</h3>" + table(
+        ("Rank", "Provider", "Model", "Tokens"),
+        [(index, leader["provider"], leader["model"], f"{leader['tokens']:,}") for index, leader in enumerate(leaders["combined"], 1)],
+    ) + "</section>"
+    pages = {"index.html": page("Eurysx report", "index.html", insights + leader_tables + "<section><h2>COMPARISON SUMMARY</h2>" + table(("Agent", "Total tokens", "Requests", "Turns", "Tool calls", "Known cost", "Daily known"), overview_rows) + "</section>")}
+
+    for agent, stats in agents:
+        display = report.agent_displays.get(agent)
+        period = f"{display.start_date} to {display.end_date} ({display.label})" if display else report.period_label
+        total = table(("Metric", "Value"), (("Model requests", f"{stats.total_model_requests:,}"), ("Model turns", f"{stats.total_model_turns:,}"), ("Model tool calls", f"{stats.total_model_tool_calls:,}"), ("Input tokens", f"{stats.total_input_tokens:,}"), ("Output tokens", f"{stats.total_output_tokens:,}"), ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"), ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"), ("Grand total tokens", f"{stats.total_tokens:,}"), ("Known cost", cost(stats, stats.known_cost)), ("Cost context", cost_context(stats))))
+        sections = [f"<h1>{text(AGENT_NAMES.get(agent, agent))}</h1><p>Analysis period: {text(period)}</p>", section("TOTAL USAGE", total, open=True)]
+        for warning in stats.scope_warnings:
+            sections.append(f"<p>Warning: {text(warning)}</p>")
+        total_days = (display.end_date - display.start_date).days + 1 if display and display.start_date else 0
+        active_days = len(stats.daily_activity)
+        daily_tokens = stats.total_tokens / total_days if total_days else 0
+        sections.extend((
+            section("COST PROJECTIONS", table(("Period", "Known cost"), (("Daily", cost(stats, stats.daily_cost)), ("Weekly", cost(stats, stats.weekly_cost)), ("Monthly", cost(stats, stats.monthly_cost)), ("Quarterly", cost(stats, stats.quarterly_cost)), ("Yearly", cost(stats, stats.yearly_cost))))),
+            section("TOKEN VOLUME", table(("Period", "Tokens"), (("Daily", f"{daily_tokens:,.0f}"), ("Active-day average", f"{stats.total_tokens / active_days:,.0f}" if active_days else "N/A"), ("Weekly", f"{daily_tokens * 7:,.0f}"), ("Monthly", f"{daily_tokens * 30:,.0f}"), ("Quarterly", f"{daily_tokens * 90:,.0f}"), ("Yearly", f"{daily_tokens * 365:,.0f}")))),
+            section("MODEL ACTIVITY VOLUME", table(("Period", "Requests", "Turns", "Tool calls"), [(label, f"{stats.total_model_requests / total_days * multiplier:,.0f}" if total_days else "N/A", f"{stats.total_model_turns / total_days * multiplier:,.0f}" if total_days else "N/A", f"{stats.total_model_tool_calls / total_days * multiplier:,.0f}" if total_days else "N/A") for label, multiplier in (("Daily", 1), ("Weekly", 7), ("Monthly", 30), ("Quarterly", 90), ("Yearly", 365))])),
+            section("COST ANALYSIS", table(("Metric", "Value"), (("Known cost", cost(stats, stats.known_cost)), ("Unknown-cost entries", f"{stats.unknown_cost_count:,}"), ("Unknown metered-cost tokens", f"{stats.unknown_cost_tokens:,}"), ("Metered token coverage", f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"), *[(f"{mode.title()} tokens", f"{tokens:,}") for mode, tokens in sorted(stats.non_metered_tokens.items())]))),
+        ))
+        for title, label, data, noun in (("BREAKDOWN BY MODEL", "Model", stats.model_breakdown, "models"), ("BREAKDOWN BY PROJECT", "Project", stats.project_breakdown, "projects"), ("BREAKDOWN BY SESSION", "Session", stats.session_breakdown, "sessions")):
+            count = len(data)
+            sections.append(section(title, table((label, "Tokens", "Known cost", "Cost status"), [(key, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _cost_status(item)) for key, item in sorted(data.items())], sortable=True), meta=f"{count} {noun[:-1] if count == 1 else noun}"))
+        days = len(stats.daily_activity)
+        sections.append(section("DAILY ACTIVITY", table(("Date", "Tokens", "Known cost", "Cost status"), [(day, f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for day, item in sorted(stats.daily_activity.items())], sortable=True), meta=f"{days} {'day' if days == 1 else 'days'}"))
+        sections.append(section("SUMMARY STATISTICS", table(("Metric", "Value"), (("Sessions", stats.sessions_count), ("Usage entries", stats.usage_entries), ("Unique models", len(stats.unique_models)), ("Cache read ratio", f"{stats.cache_read_ratio:.1%}" if stats.cache_read_ratio is not None else "N/A"), ("Cache efficiency ratio", f"{stats.cache_efficiency_ratio:.1f}:1" if stats.cache_efficiency_ratio is not None else "N/A"), ("Requests per turn", f"{stats.requests_per_turn:.2f}" if stats.requests_per_turn is not None else "N/A"), ("Tool calls per request", f"{stats.tool_calls_per_request:.2f}" if stats.tool_calls_per_request is not None else "N/A"), ("Tool calls per turn", f"{stats.tool_calls_per_turn:.2f}" if stats.tool_calls_per_turn is not None else "N/A")))))
+        sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Fetched at"), [(source, stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
+        if stats.unresolved_routes:
+            sections.append(section("UNRESOLVED METERED ROUTES", table(("Provider", "Model", "Tokens", "Reason"), [(route["provider"], route["model"], f"{route['tokens']:,}", route["reason"]) for route in stats.unresolved_routes], sortable=True)))
+        comparison = report.period_comparison.get(agent)
+        if comparison:
+            current = comparison["current"]
+            previous = comparison["previous"]
+            sections.append(section("PERIOD COMPARISON", table(("Metric", "Current", "Previous"), [("Total tokens", f"{current['total_tokens']:,}", f"{previous['total_tokens']:,}"), ("Known cost", _cost_display({"cost": current["known_cost"], "cost_status_counts": current["cost_status_counts"]}), _cost_display({"cost": previous["known_cost"], "cost_status_counts": previous["cost_status_counts"]})), ("Usage entries", f"{current['usage_entries']:,}", f"{previous['usage_entries']:,}"), ("Model requests", f"{current['model_requests']:,}", f"{previous['model_requests']:,}")])))
+        pages[f"{agent}.html"] = page(f"Eurysx: {agent}", f"{agent}.html", "".join(sections))
+    return pages
 
 
 def build_json_report(report: AnalysisReport) -> Dict:
@@ -575,5 +689,15 @@ def build_json_report(report: AnalysisReport) -> Dict:
             agent: _agent_stats_dict(stats)
             for agent, stats in report.agent_stats.items()
         },
-        "period_comparison": report.period_comparison,
+        "comparison_summary": {"leaders": _comparison_leaders(report)},
+        "period_comparison": {
+            agent: {
+                **comparison,
+                "current": {key: value for key, value in comparison["current"].items()
+                            if key != "cost_status_counts"},
+                "previous": {key: value for key, value in comparison["previous"].items()
+                             if key != "cost_status_counts"},
+            }
+            for agent, comparison in report.period_comparison.items()
+        },
     }
