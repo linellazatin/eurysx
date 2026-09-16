@@ -12,6 +12,7 @@ def _comparison_fields(stats: AgentStats) -> Dict[str, Any]:
     return {
         "total_tokens": stats.total_tokens,
         "known_cost": stats.known_cost,
+        "cost_status_counts": stats.cost_status_counts,
         "usage_entries": stats.usage_entries,
         "model_requests": stats.total_model_requests,
     }

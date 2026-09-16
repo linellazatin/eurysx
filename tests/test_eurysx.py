@@ -1,3 +1,4 @@
+import ast
 import json
 import io
 import os
@@ -1039,6 +1040,136 @@ class CostCoverageTests(unittest.TestCase):
             app.build_markdown_report(report),
         )
 
+    def test_comparison_leaders_are_shared_by_non_csv_outputs(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.0, 10, model="small"),
+                   self._usage("recorded", 2.0, 20, model="large")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        report = self._terminal_report(stats)
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            app.print_summary_comparison(report)
+
+        leaders = {"agents": {"pi": {"provider": "provider", "model": "large", "tokens": 20}},
+                   "combined": [{"provider": "provider", "model": "large", "tokens": 20},
+                                {"provider": "provider", "model": "small", "tokens": 10}]}
+        self.assertEqual(app.build_json_report(report)["comparison_summary"]["leaders"], leaders)
+        self.assertIn("TOKEN LEADERS", terminal.getvalue())
+        self.assertIn("provider", app.build_markdown_report(report))
+        self.assertIn("TOKEN LEADERS", app.build_html_reports(report)["index.html"])
+
+    def test_terminal_metric_blocks_align_value_columns(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.5, 10),
+                   self._usage("not_applicable", 0.0, 20, billing_mode="subscription")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_single_agent_report(self._terminal_report(stats), "pi")
+
+        text = output.getvalue()
+        projections = text.split("COST PROJECTIONS PER TIME PERIOD", 1)[1].split("TOKEN VOLUME", 1)[0]
+        costs = text.split("COST ANALYSIS", 1)[1].split("Route breakdown:", 1)[0]
+        projection_lines = [line for line in projections.splitlines() if line.startswith(("Daily", "Weekly", "Monthly", "Quarterly", "Yearly"))]
+        cost_lines = [line for line in costs.splitlines() if line.startswith(("Known", "Unknown", "Metered", "Subscription"))]
+
+        self.assertEqual(len({len(line.rstrip()) for line in projection_lines}), 1)
+        self.assertEqual(len({len(line.rstrip()) for line in cost_lines}), 1)
+
+    def test_html_report_renders_analysis_sections_and_unavailable_cost(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [
+                self._usage("configured", 1.5, 40, model="priced-model"),
+                self._usage("unknown", 0.0, 10, model="unknown-model"),
+            ],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        stats.pricing_sources.add("models-dev")
+        stats.pricing_fetched_at["models-dev"] = "2026-08-01T00:00:00Z"
+        pages = app.build_html_reports(self._terminal_report(stats))
+        html = "\n".join(pages.values())
+
+        for section in (
+            "COMPARISON SUMMARY", "DAILY ACTIVITY", "BREAKDOWN BY MODEL",
+            "PRICING PROVENANCE", "BREAKDOWN BY PROJECT", "BREAKDOWN BY SESSION",
+        ):
+            self.assertIn(section, html)
+        self.assertIn("priced-model", html)
+        self.assertIn("unknown-model", html)
+        self.assertIn("models-dev", html)
+        self.assertIn("2026-08-01T00:00:00Z", html)
+        self.assertIn("N/A", html)
+
+    def test_html_report_bundle_has_summary_agent_page_and_navigation(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.5, 10)],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        pages = app.build_html_reports(self._terminal_report(stats))
+
+        self.assertEqual(sorted(pages), ["index.html", "pi.html"])
+        self.assertIn("COMBINED TOTAL", pages["index.html"])
+        self.assertIn('href="pi.html"', pages["index.html"])
+        self.assertIn('href="index.html"', pages["pi.html"])
+        for section in (
+            "TOTAL USAGE", "COST PROJECTIONS", "TOKEN VOLUME",
+            "MODEL ACTIVITY VOLUME", "COST ANALYSIS", "PRICING PROVENANCE",
+        ):
+            self.assertIn(section, pages["pi.html"])
+
+    def test_html_agent_sections_are_collapsible_and_large_tables_sortable(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.5, 10, model="model-b"),
+                   self._usage("recorded", 1.0, 20, model="model-a")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        page = app.build_html_reports(self._terminal_report(stats))["pi.html"]
+
+        self.assertIn("<details open><summary>TOTAL USAGE</summary>", page)
+        self.assertIn("<details><summary>BREAKDOWN BY MODEL", page)
+        self.assertIn('<table class="sortable">', page)
+        self.assertIn('aria-sort="none"', page)
+        self.assertIn("addEventListener('click'", page)
+
+    def test_html_summary_surfaces_the_leading_harness(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.5, 10)],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        summary = app.build_html_reports(self._terminal_report(stats))["index.html"]
+
+        self.assertIn("At a glance", summary)
+        self.assertIn("Most usage", summary)
+        self.assertIn("PI CODING AGENT", summary)
+
+    def test_html_breakdowns_show_counts_and_scroll_on_narrow_screens(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("recorded", 1.5, 10, model="model-b"),
+                   self._usage("recorded", 1.0, 20, model="model-a")],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        page = app.build_html_reports(self._terminal_report(stats))["pi.html"]
+
+        self.assertIn("2 models", page)
+        self.assertIn('<div class="table-scroll">', page)
+
+    def test_html_overview_labels_unknown_cost_as_unavailable(self):
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [self._usage("unknown", 0.0, 10)],
+            date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+
+        summary = app.build_html_reports(self._terminal_report(stats))["index.html"]
+
+        self.assertIn("N/A", summary)
+        self.assertNotIn("$0.000000", summary)
+
     def test_daily_activity_labels_unknown_cost_as_unavailable(self):
         stats = app.UsageAnalyzer.analyze_agent(
             "pi", [self._usage("unknown", 0.0, 10)],
@@ -1765,6 +1896,8 @@ class DateRangeTests(unittest.TestCase):
         self.assertEqual(comparison["previous"]["total_tokens"], 40)
         self.assertEqual(comparison["current"]["known_cost"], 1.0)
         self.assertEqual(comparison["previous"]["known_cost"], 4.0)
+        self.assertNotIn("cost_status_counts", comparison["current"])
+        self.assertNotIn("cost_status_counts", comparison["previous"])
         self.assertEqual(comparison["previous_period"], "2026-07-31 to 2026-07-31")
         self.assertIn("PERIOD COMPARISON", terminal_text)
         self.assertIn("+150%", terminal_text)  # (100 - 40) / 40
@@ -1831,7 +1964,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     """Pre-refactor baseline: locks the report shape Act III Phase 2 and 6 diff against."""
 
     TOP_LEVEL_KEYS = [
-        "agent_stats", "agents_analyzed", "analysis_period", "period_comparison",
+        "agent_stats", "agents_analyzed", "analysis_period", "comparison_summary", "period_comparison",
         "preferences", "pricing", "schema_version",
     ]
     AGENT_STATS_KEYS = sorted([
@@ -1912,18 +2045,19 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         }},
     }
 
-    def _run(self):
+    def _run(self, output_format="json", recorded=True, default_html=False):
+        cost = 1.25 if recorded else 0.0
         usage = app.UsageEntry(
             agent="pi", model_id="model", timestamp="2026-08-01T12:00:00Z",
             input_tokens=10, output_tokens=20, cache_read_tokens=30,
-            cache_write_tokens=40, total_tokens=100, cost=1.25,
-            cost_breakdown={"total": 1.25}, provider="openai",
-            observed_provider="openai", cost_status="recorded", session_id="s1",
+            cache_write_tokens=40, total_tokens=100, cost=cost,
+            cost_breakdown={"total": cost} if recorded else {}, provider="openai",
+            observed_provider="openai", cost_status="recorded" if recorded else "unknown", session_id="s1",
             project_id="/repo/a", model_requests=1, model_turns=1,
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            output_path = root / "report.json"
+            output_path = root / f"report.{output_format}"
             terminal = io.StringIO()
             # Hermetic pricing/preferences: no repo config leaks into the baseline.
             pricing = app.PricingResolver(root / "missing.jsonc", root / "cache")
@@ -1931,22 +2065,51 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             argv = [
                 "eurysx", "--agent", "pi",
                 "--from", "2026-08-01", "--to", "2026-08-01",
-                "--output", str(output_path),
+                "--format", output_format,
             ]
+            if not default_html:
+                argv += ["--output", str(output_path)]
             sources = lambda agent, home=None: [
                 Source("pi:fake", "fingerprint-1", "1", lambda: [usage])
             ]
-            with (
-                patch("sys.argv", argv),
-                patch.object(app, "collect_sources", side_effect=sources),
-                patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
-                patch.object(app, "PricingResolver", return_value=pricing),
-                patch.object(app, "PreferencesResolver", return_value=prefs),
-                redirect_stdout(terminal),
-                redirect_stderr(io.StringIO()),
-            ):
-                app.main()
-            return json.loads(output_path.read_text()), terminal.getvalue()
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with (
+                    patch("sys.argv", argv),
+                    patch.object(app, "collect_sources", side_effect=sources),
+                    patch.object(app, "get_eurysx_data_dir", return_value=root / "data"),
+                    patch.object(app, "PricingResolver", return_value=pricing),
+                    patch.object(app, "PreferencesResolver", return_value=prefs),
+                    redirect_stdout(terminal),
+                    redirect_stderr(io.StringIO()),
+                ):
+                    app.main()
+            finally:
+                os.chdir(previous_cwd)
+            if default_html:
+                output_path = next(root.glob("usage-analysis-report-*"))
+            if output_format == "html":
+                content = "\n".join(path.read_text() for path in sorted(output_path.glob("*.html")))
+            else:
+                content = output_path.read_text()
+            return (json.loads(content) if output_format == "json" else content), terminal.getvalue()
+
+    def test_html_output_is_written_via_cli(self):
+        html, _ = self._run("html", recorded=False)
+
+        self.assertTrue(html.startswith("<!doctype html>"))
+        self.assertIn("PRICING PROVENANCE", html)
+        self.assertIn("N/A", html)
+        comparison = html.split("<summary>PERIOD COMPARISON</summary>", 1)[1].split("</details>", 1)[0]
+        self.assertIn("N/A", comparison)
+        self.assertNotIn("$0.000000", comparison)
+
+    def test_html_output_defaults_to_a_timestamped_directory(self):
+        html, _ = self._run("html", default_html=True)
+
+        self.assertIn("Usage overview", html)
+        self.assertIn("PI CODING AGENT", html)
 
     def test_json_output_shape_is_the_locked_baseline(self):
         report, _ = self._run()
@@ -1969,8 +2132,10 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         stats = report["agent_stats"]["pi"]
         self.assertAlmostEqual(stats["cache_read_ratio"], 30 / 70)
         self.assertEqual(stats["cache_efficiency_ratio"], 0.75)
-        self.assertIn("Cache read ratio: 42.9%", terminal)
-        self.assertIn("Cache efficiency ratio: 0.8:1", terminal)
+        self.assertIn("Cache read ratio:", terminal)
+        self.assertIn("42.9% (30 / 70)", terminal)
+        self.assertIn("Cache efficiency ratio:", terminal)
+        self.assertIn("0.8:1", terminal)
 
     def test_terminal_report_key_sections_present(self):
         _, terminal = self._run()
@@ -2033,6 +2198,24 @@ class SummaryOutputTests(unittest.TestCase):
         self.assertIn("Known Cost", output.getvalue())
 
 
+class PresentationBoundaryTests(unittest.TestCase):
+    def test_presentation_has_no_pipeline_dependencies(self):
+        root = Path(__file__).parent.parent / "src" / "eurysx"
+
+        def imports(path):
+            tree = ast.parse(path.read_text())
+            return {
+                node.module
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module
+            }
+
+        pipeline_modules = {"analysis", "pricing", "store", "collectors"}
+        self.assertFalse(imports(root / "render.py") & pipeline_modules)
+        for path in (root / "analysis.py", root / "pricing.py", root / "store.py", *(root / "collectors").glob("*.py")):
+            self.assertNotIn("render", imports(path), path)
+
+
 class ManualDriftTests(unittest.TestCase):
     def test_manual_contract_terms_exist_in_source(self):
         root = Path(__file__).parent.parent
@@ -2055,7 +2238,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.1")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.2")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:
