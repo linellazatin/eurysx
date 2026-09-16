@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2] - Local HTML report
+
+### Added
+
+- Static HTML bundle with agent pages and local navigation.
+- Collapsible, sortable, mobile-scrollable report tables.
+- Token leaders in HTML, terminal, JSON, and Markdown summaries.
+
 ## [0.1.1] - Cost-status-safe breakdowns
 
 ### Added

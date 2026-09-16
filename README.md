@@ -12,7 +12,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.1.1 is a local CLI, not a hosted service.
+> Eurysx v0.1.2 is a local CLI, not a hosted service.
 
 ## What the name means
 
@@ -55,6 +55,8 @@ eurysx --agent codex --days 30
 eurysx --agent all --month 2026-08
 eurysx --agent pi --from 2026-08-01 --to 2026-08-15
 eurysx --agent all --days 30 --output reports/usage.json
+eurysx --agent all --days 30 --format html
+eurysx --agent all --days 30 --output reports/august-usage --format html
 eurysx --refresh-pricing
 eurysx collect --agent codex
 eurysx report --agent codex --days 30
@@ -82,8 +84,7 @@ period runs also compare against the same-length previous window. See the
 ## Documentation
 
 The [operational manual](docs/manual.md) is the authoritative command, output,
-configuration, and diagnostics reference. Legacy [CLI](docs/cli.md) and
-[output](docs/output.md) pages redirect there.
+configuration, and diagnostics reference.
 
 This manual is the authoritative contract for the JSONC configuration files.
 

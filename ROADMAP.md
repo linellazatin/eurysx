@@ -206,11 +206,7 @@ pages and are folded into it when that phase lands.
   `session_id` is attributed.~~ Delivered by Phase 3C as
   `project_breakdown`/`session_breakdown` (tokens, cost, and activity counts per
   bucket, terminal and JSON); nothing left to build here.
-- ~~[ ] Flag metrics that include last-good data from sources whose most recent
-  refresh failed. Deferred to Phase 5: `UsageEntry` carries no `source_key`,
-  `store.failing_sources()` is not agent-scoped, and `source_key` embeds
-  absolute paths, so the flag must be a count or boolean per agent. Phase 5
-  already owns diagnostics and must not add state, so both land together.~~
+- ~~[ ] Flag metrics that include last-good data from sources whose most recent refresh failed. Deferred to Phase 5: `UsageEntry` carries no `source_key`, `store.failing_sources()` is not agent-scoped, and `source_key` embeds absolute paths, so the flag must be a count or boolean per agent. Phase 5 already owns diagnostics and must not add state, so both land together.~~
 
 #### v0.0.6 checkpoint fixes (pre-phase reassessment, shipped)
 
@@ -306,14 +302,21 @@ must have a named remedy.
 
 Provide useful local presentations without introducing a hosted product.
 
-- [ ] Generate a self-contained HTML report from the same analysis results as the
+- [x] Generate a self-contained HTML report from the same analysis results as the
   CLI and exports.
-- [ ] Add overview, trends, model/agent breakdowns, pricing provenance, projects,
+- [x] Add overview, trends, model/agent breakdowns, pricing provenance, projects,
   and sessions where supported.
-- [ ] Consider a read-only localhost dashboard only after HTML reports prove
-  insufficient.
-- [ ] Keep presentation logic separate from collection, pricing, storage, and
-  analysis.
+- [x] Make dense per-agent reports navigable with native disclosure sections:
+  total usage opens initially, while supporting sections remain collapsible.
+- [x] Add client-side sorting to high-cardinality static tables (model, project,
+  session, daily activity, route, and unresolved-route breakdowns); retain the
+  fixed order of metric, projection, and combined-summary tables.
+- [x] Improve static-report hierarchy with at-a-glance usage, token leaders,
+  cost-context labels, count-bearing disclosure headings, and narrow-screen
+  table scrolling; reuse token leaders in terminal, JSON, and Markdown output.
+- [x] Keep presentation logic separate from collection, pricing, storage, and
+  analysis; a dependency-boundary test prevents presentation-layer imports in
+  pipeline modules and pipeline imports in `render.py`.
 
 ## Act V: Proof
 
@@ -329,6 +332,7 @@ Validate demand before expanding the business surface.
 
 - Cloud sync, accounts, hosted dashboards, team organizations, SSO, RBAC, mobile
   or desktop apps, real-time watchers, background daemons, and editor extensions.
+- Read-only localhost dashboard
 - LLM-based recommendations, API routing/proxying, prompt-quality scoring,
   conversation analysis, agent benchmarking, subscription allocation, and
   credit-to-USD conversion.

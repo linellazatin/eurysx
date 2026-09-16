@@ -38,11 +38,23 @@ eurysx --agent codex --days 30
 eurysx report --agent pi --provider unknown --month 2026-08
 eurysx --agent all --output reports/usage.csv --format csv
 eurysx --agent all --output reports/usage.md --format markdown
+eurysx --agent all --days 30 --format html
+eurysx --agent all --days 30 --output reports/august-usage --format html
 ```
 
-`--output PATH` writes a file. `--format json|csv|markdown` selects its format and defaults to JSON. CSV and Markdown require `--output`.
+`--output PATH` writes a file. `--format json|csv|markdown|html` selects its format and defaults to JSON. CSV and Markdown require `--output`. HTML writes a directory: without `--output`, its name is `usage-analysis-report-YYYYMMDD-HHMMSS`; with `--output`, PATH is the new destination directory and must not already exist.
 
-JSON schema version 1 is stable. It contains `schema_version: 1`, analysis period, pricing/preferences provenance, agent stats, `unresolved_routes`, `pacing`, and period comparison. Aggregate breakdowns retain cost-status counts so a numeric cost is never inferred from unavailable pricing. CSV writes deterministic agent/provider/model route rows with `cost_status`; unavailable `known_cost_usd` is `N/A`. Markdown writes a period, agent summaries, and route tables with the same cost status.
+JSON schema version 1 is stable. It contains `schema_version: 1`, analysis period, pricing/preferences provenance, agent stats, `unresolved_routes`, `pacing`, and period comparison. Aggregate breakdowns retain cost-status counts so a numeric cost is never inferred from unavailable pricing.
+
+| Output | Best for | Contents and interaction |
+| --- | --- | --- |
+| Terminal | Immediate local inspection | Full per-agent analysis, comparison summary, and token leaders; no saved artifact or interaction. |
+| JSON | Automation and stable integrations | The complete versioned analysis contract, including additive comparison leaders. |
+| CSV | Spreadsheet or tabular processing | Deterministic agent/provider/model route rows with `cost_status`; unavailable `known_cost_usd` is `N/A`. It deliberately has no summary rows. |
+| Markdown | Human-readable saved summaries | Token leaders, period, agent summaries, and route tables with the same cost status. |
+| HTML | Offline exploration of one report | A self-contained bundle with overview and per-agent pages. The overview shows leader routes per harness and the combined top three. Agent pages retain the richer analysis sections, disclose supporting detail on demand, show cost context, and provide sortable breakdowns. Wide sortable tables scroll inside their section on narrow screens. |
+
+HTML writes `index.html` plus one page per analyzed agent. Total usage is initially open; model, project, session, daily activity, route, and unresolved-route tables sort locally by clicking a column heading. Metric, projection, and combined-summary table order stays fixed. Every page has sidebar navigation, all content remains local, and no server or network request is made.
 
 ## Local state lifecycle
 
