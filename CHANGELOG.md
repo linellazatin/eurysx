@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3] - Pricing source reassessment
+
+### Fixed
+
+- Calculated metered prices now render as known cost rather than `N/A`.
+
+### Added
+
+- JSON pricing provenance identifies recorded, override, official, and catalog sources.
+
+### Changed
+
+- Reassessed pricing-source coverage for Claude Code and Codex subscription usage; direct OpenAI pricing remains deferred because local history lacks the route tier needed to select its published rates.
+
 ## [0.1.2] - Local HTML report
 
 ### Added

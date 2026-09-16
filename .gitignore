@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .nanomneme/
+research*/
 
 # Local pricing state
 cache/

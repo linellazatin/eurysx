@@ -686,6 +686,16 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(result["source"], "models-dev")
         self.assertEqual(result["pricing"]["output"], 4)
 
+    def test_resolved_prices_disclose_their_source_kind(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = app.PricingResolver(root / "pricing.jsonc", root / "cache")
+            resolver._add("provider", "model", {"input": 1, "output": 2}, "models-dev")
+
+            result = resolver.resolve("provider", "model")
+
+        self.assertEqual(result["source_kind"], "catalog")
+
     def test_cache_directory_is_created_without_an_enabled_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -865,6 +875,43 @@ class PricingTests(unittest.TestCase):
                 resolver = app.PricingResolver(config, root / "cache")
 
         self.assertTrue(resolver.warnings)
+
+    def test_pricing_application_keeps_resolved_source_kind(self):
+        with tempfile.TemporaryDirectory() as temp:
+            usage = app.UsageEntry(
+                agent="codex", model_id="model", timestamp="2026-08-21T00:00:00",
+                input_tokens=10, output_tokens=10, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=20, cost=0.0,
+                cost_breakdown={}, provider="provider",
+            )
+            usage.billing_mode = "metered"
+            resolver = app.PricingResolver(Path(temp) / "missing.jsonc", Path(temp) / "cache")
+            resolver._add("provider", "model", {"input": 1, "output": 1}, "models-dev")
+            app.apply_pricing([usage], resolver)
+
+        self.assertEqual(usage.pricing_source, "models-dev")
+        self.assertEqual(usage.pricing_source_kind, "catalog")
+
+    def test_estimated_cost_is_known_in_presentation(self):
+        self.assertEqual(
+            eurysx.render._cost_status({"cost_status_counts": {"estimated": 1}}), "known"
+        )
+
+    def test_analysis_keeps_pricing_source_kinds(self):
+        usage = app.UsageEntry(
+            agent="codex", model_id="model", timestamp="2026-08-21T00:00:00",
+            input_tokens=10, output_tokens=10, cache_read_tokens=0,
+            cache_write_tokens=0, total_tokens=20, cost=0.02,
+            cost_breakdown={"total": 0.02}, provider="provider",
+            billing_mode="metered", cost_status="estimated",
+            pricing_source="models-dev", pricing_source_kind="catalog",
+        )
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "codex", [usage], date(2026, 8, 21), date(2026, 8, 21), "1d"
+        )
+
+        self.assertEqual(stats.pricing_source_kinds, {"models-dev": "catalog"})
 
     def test_recorded_cost_is_not_repriced(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1972,7 +2019,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
         "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
-        "pricing_fetched_at", "pricing_sources", "project_breakdown",
+        "pricing_fetched_at", "pricing_source_kinds", "pricing_sources", "project_breakdown",
         "pacing", "quarterly_cost", "requests_per_turn", "route_breakdown", "scope_warnings",
         "session_breakdown", "sessions_count", "tool_calls_per_request",
         "tool_calls_per_turn", "total_cache_read_tokens",
@@ -2010,6 +2057,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "non_metered_tokens": {},
         "priced_token_coverage": 1.0,
         "pricing_fetched_at": {},
+        "pricing_source_kinds": {"recorded": "recorded"},
         "pricing_sources": ["recorded"],
         "quarterly_cost": 112.5,
         "requests_per_turn": 1.0,
@@ -2238,7 +2286,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.2")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.3")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

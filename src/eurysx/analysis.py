@@ -165,6 +165,8 @@ class UsageAnalyzer:
                     stats.unknown_cost_tokens += usage.total_tokens
             if usage.pricing_source:
                 stats.pricing_sources.add(usage.pricing_source)
+                if usage.pricing_source_kind:
+                    stats.pricing_source_kinds[usage.pricing_source] = usage.pricing_source_kind
             if usage.pricing_source and usage.pricing_fetched_at:
                 stats.pricing_fetched_at[usage.pricing_source] = usage.pricing_fetched_at
             stats.usage_entries += 1

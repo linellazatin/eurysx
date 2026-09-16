@@ -298,6 +298,120 @@ must have a named remedy.
 - [x] Update the Act III docs convention in `AGENTS.md` to name `docs/manual.md`
   as the operational source of truth when this lands.
 
+### Phase 9: Cost semantics and official pricing (v0.1.3, shipped subset)
+
+Established a trustworthy foundation for distinguishing billable cost from
+calculated or non-metered usage.
+
+- [x] Define explicit cost provenance for recorded, provider-reported,
+  estimated, configured override, not-applicable, and unknown values.
+- [x] Keep harness-recorded cost authoritative; never replace it with a price
+  source or tokenizer result.
+- [x] Ensure ChatGPT OAuth/subscription Codex rows cannot resolve through an
+  API price source unless the recorded route explicitly identifies API billing.
+- [x] Keep provider and model matching exact and provider-scoped; add aliases
+  only when backed by explicit source mappings.
+- [x] Update README, CHANGELOG, and `docs/manual.md` with source precedence,
+  provenance labels, and the OpenAI-source limitation.
+
+Non-goals: no tokenizer dependency, no prompt/content reads, no subscription
+allocation, and no third-party catalog expansion.
+
+#### Deferred Phase 9 follow-ups
+
+- [ ] Add an official OpenAI pricing source only after local records identify
+  the applicable standard/long-context, batch, flex, or fast rate. Until then,
+  retain exact overrides/models.dev rather than guessing or scraping.
+- [ ] Normalize provider-reported reasoning-token details when Codex records
+  them in `last_token_usage`, without deriving them from visible content.
+- [ ] Add direct-OpenAI and reasoning-token fixtures when those source shapes
+  are supported; retain the existing precedence, subscription, cache, exact
+  provider/model, and unresolved-route coverage meanwhile.
+
+### Phase 10: Actual cost versus API-equivalent estimates (v0.1.4)
+
+Allow users to inspect a useful retail-equivalent estimate without presenting
+it as an invoice or changing billing classification.
+
+- [ ] Extend the usage/result model additively so actual cost and estimated
+  cost cannot be confused.
+- [ ] Define estimate basis and provenance, including provider, model, source,
+  cache fields, and calculation timestamp.
+- [ ] Add an opt-in API-equivalent estimate for subscription-backed usage when
+  exact model/provider pricing exists.
+- [ ] Keep subscription, credit, quota, and local billing modes non-metered;
+  estimates must not become known cost, pacing spend, or budget consumption.
+- [ ] Render estimate and actual-cost labels consistently in terminal, JSON,
+  CSV, Markdown, and HTML outputs.
+- [ ] Preserve the stable JSON contract through additive fields and document
+  null/unknown behavior.
+- [ ] Add tests proving estimates do not affect known-cost totals, coverage,
+  pacing, comparisons, or cost-status counts.
+
+Non-goal: dividing subscription fees by tokens or inferring a per-token
+subscription price.
+
+### Phase 11: Anthropic aggregate-cost imports (v0.1.5)
+
+Use Anthropic's official organization-level usage and cost reporting where the
+user has access, without pretending aggregate data is session-level data.
+
+- [ ] Define a provider-reported aggregate import contract for JSON/CSV or a
+  deliberately explicit API response input.
+- [ ] Support Anthropic Usage & Cost and/or Claude Code Analytics report shapes
+  only after their fields and scope are verified against fixtures.
+- [ ] Record model, date, actor/account scope, token dimensions, estimated or
+  reported USD cost, source, and freshness metadata without storing credentials
+  or conversation content.
+- [ ] Mark imported rows as aggregate and keep them outside session/project
+  allocation unless a documented, stable join key exists.
+- [ ] Prevent imported aggregate cost from being double-counted with local
+  Claude Code stats-cache usage; define replacement, reconciliation, or
+  separate-report behavior explicitly.
+- [ ] Keep Anthropic aggregate imports separate from Bedrock, Vertex, Foundry,
+  and other cloud-provider routes, which require their own billing sources.
+- [ ] Add source fingerprints, incremental replacement, stale-cache/failure
+  diagnostics, scope warnings, and sanitized fixtures.
+- [ ] Document required user action, supported account scopes, data freshness,
+  limitations, and the fact that Pro/Max included usage is not an invoice.
+
+Non-goal: automatically reading Anthropic credentials or allocating one
+organization aggregate across local sessions.
+
+### Phase 12: Account and workspace billing imports (v0.1.6)
+
+Add account-specific provider billing data only where the provider exposes a
+usable report and the user explicitly supplies it.
+
+- [ ] Assess and separately integrate supported Anthropic Enterprise,
+  OpenAI Business/Enterprise/Edu, and AWS/Bedrock billing or usage exports.
+- [ ] Define per-source scope, dimensions, currency/credits, settlement status,
+  and whether values are actual, estimated, or planning-only.
+- [ ] Require explicit route/account configuration; never infer a workspace or
+  upstream provider from a model name.
+- [ ] Reconcile imported account totals with local tokens only when date,
+  provider, model, and scope are sufficient; otherwise retain separate
+  aggregate rows and disclose the limitation.
+- [ ] Add conflict handling when provider-reported cost disagrees with local
+  recorded cost, preserving both provenance records and the existing recorded
+  cost precedence rule.
+- [ ] Add import validation, source health diagnostics, fixture coverage, and
+  operational documentation for each provider-specific format.
+
+Non-goal: generic account integration, credential discovery, or conversion of
+credits/allowances into USD without documented provider rates.
+
+### Deferred pricing and tokenizer work
+
+- [ ] Consider provider token-count APIs or local tokenizers only for a future
+  live/preflight instrumentation mode. Label results as estimates and never
+  rewrite completed harness usage.
+- [ ] Reassess LiteLLM, OpenRouter, and other third-party catalogs only after
+  official sources and provenance semantics are complete; require explicit
+  route configuration and clearly mark catalog estimates.
+- [ ] Keep subscription-fee allocation deferred until a provider exposes actual
+  usage cost and reliable usage-to-session attribution.
+
 ## Act IV: Local View
 
 Provide useful local presentations without introducing a hosted product.
