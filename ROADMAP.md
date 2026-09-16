@@ -298,39 +298,35 @@ must have a named remedy.
 - [x] Update the Act III docs convention in `AGENTS.md` to name `docs/manual.md`
   as the operational source of truth when this lands.
 
-### Phase 9: Cost semantics and official pricing (v0.1.3)
+### Phase 9: Cost semantics and official pricing (v0.1.3, shipped subset)
 
-Establish a trustworthy foundation for distinguishing billable cost from
-calculated or non-metered usage. This is the first implementation phase for
-the current checkout.
+Established a trustworthy foundation for distinguishing billable cost from
+calculated or non-metered usage.
 
 - [x] Define explicit cost provenance for recorded, provider-reported,
   estimated, configured override, not-applicable, and unknown values.
 - [x] Keep harness-recorded cost authoritative; never replace it with a price
   source or tokenizer result.
-- [ ] Add an official OpenAI pricing source for confirmed API-key routes only.
-  The official Markdown pricing table is stable enough to read, but local
-  history lacks the service tier and short/long-context metadata needed to
-  choose safely among its standard, long-context, batch, flex, and fast rates.
-  Retain explicit overrides/models.dev rather than guessing or scraping.
 - [x] Ensure ChatGPT OAuth/subscription Codex rows cannot resolve through an
   API price source unless the recorded route explicitly identifies API billing.
-- [ ] Normalize additional provider-reported usage fields exposed by harnesses,
-  especially OpenAI reasoning-token details, without recalculating totals from
-  visible content. Current Codex `last_token_usage` fixtures expose no such
-  detail; revisit when the harness records one.
 - [x] Keep provider and model matching exact and provider-scoped; add aliases
   only when backed by explicit source mappings.
-- [ ] Add unit and fixture tests for recorded-cost precedence, API-key versus
-  subscription route separation, cache pricing, reasoning-token preservation,
-  and unresolved-route behavior. Existing precedence and subscription tests
-  cover the shipped behavior; add source-specific fixtures when direct OpenAI
-  pricing or reasoning-token fields are supportable.
 - [x] Update README, CHANGELOG, and `docs/manual.md` with source precedence,
   provenance labels, and the OpenAI-source limitation.
 
 Non-goals: no tokenizer dependency, no prompt/content reads, no subscription
 allocation, and no third-party catalog expansion.
+
+#### Deferred Phase 9 follow-ups
+
+- [ ] Add an official OpenAI pricing source only after local records identify
+  the applicable standard/long-context, batch, flex, or fast rate. Until then,
+  retain exact overrides/models.dev rather than guessing or scraping.
+- [ ] Normalize provider-reported reasoning-token details when Codex records
+  them in `last_token_usage`, without deriving them from visible content.
+- [ ] Add direct-OpenAI and reasoning-token fixtures when those source shapes
+  are supported; retain the existing precedence, subscription, cache, exact
+  provider/model, and unresolved-route coverage meanwhile.
 
 ### Phase 10: Actual cost versus API-equivalent estimates (v0.1.4)
 
