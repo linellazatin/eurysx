@@ -50,6 +50,11 @@ class PricingResolver:
     """Resolve configured, cached, and local model pricing without fallback guesses."""
 
     SCHEMA_VERSION = 2
+    SOURCE_KINDS = {
+        "amazon-bedrock": "official",
+        "models-dev": "catalog",
+        "pi-models-store": "catalog",
+    }
 
     def __init__(self, config_path: Optional[Path] = None, cache_dir: Optional[Path] = None,
                  force_refresh: bool = False, inspect_only: bool = False):
@@ -329,7 +334,7 @@ class PricingResolver:
             pricing = _pricing_values(overrides.get(key, {})) if isinstance(overrides, dict) else None
             if pricing:
                 return {"pricing": pricing, "status": "configured", "source": "override",
-                        "fetched_at": None}
+                        "source_kind": "override", "fetched_at": None}
         source_names = sources if sources is not None else sorted(
             self.models, key=lambda name: (self.source_priorities.get(name, 100), name)
         )
@@ -338,8 +343,11 @@ class PricingResolver:
                 entry = self.models.get(source, {}).get(key)
                 if entry:
                     return {"pricing": entry["pricing"], "status": "cached",
-                            "source": source, "fetched_at": entry["fetched_at"]}
-        return {"pricing": None, "status": "unknown", "source": None, "fetched_at": None}
+                            "source": source,
+                            "source_kind": self.SOURCE_KINDS.get(source, "catalog"),
+                            "fetched_at": entry["fetched_at"]}
+        return {"pricing": None, "status": "unknown", "source": None,
+                "source_kind": "unknown", "fetched_at": None}
 
 
 def calculate_cost(input_tokens: int, output_tokens: int, cache_read_tokens: int,
@@ -530,12 +538,14 @@ def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
                     )
                 usage.billing_mode = "metered"
             usage.pricing_source = usage.pricing_source or "recorded"
+            usage.pricing_source_kind = usage.pricing_source_kind or "recorded"
             continue
         if usage.billing_mode in {"subscription", "credit", "quota", "local"}:
             usage.cost = 0.0
             usage.cost_breakdown = {}
             usage.cost_status = "not_applicable"
             usage.pricing_source = None
+            usage.pricing_source_kind = "not_applicable"
             usage.pricing_fetched_at = None
             continue
         resolved = resolver.resolve(usage.pricing_provider or usage.provider,
@@ -549,4 +559,5 @@ def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
         usage.cost_breakdown = {"total": usage.cost} if resolved["pricing"] else {}
         usage.cost_status = "estimated" if resolved["pricing"] else "unknown"
         usage.pricing_source = resolved["source"]
+        usage.pricing_source_kind = resolved["source_kind"]
         usage.pricing_fetched_at = resolved["fetched_at"]

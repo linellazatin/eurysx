@@ -47,7 +47,8 @@ AGENT_NAMES = {
 
 def _cost_status(data: Dict) -> str:
     counts = data.get("cost_status_counts", {})
-    known = counts.get("recorded", 0) + counts.get("configured", 0)
+    known = (counts.get("recorded", 0) + counts.get("configured", 0)
+             + counts.get("estimated", 0))
     if known and (counts.get("unknown") or counts.get("not_applicable")):
         return "partial"
     if known:
@@ -505,6 +506,7 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "route_breakdown": stats.route_breakdown,
         "cost_status_counts": stats.cost_status_counts,
         "pricing_sources": sorted(stats.pricing_sources),
+        "pricing_source_kinds": stats.pricing_source_kinds,
         "pricing_fetched_at": stats.pricing_fetched_at,
         "daily_cost": stats.daily_cost,
         "weekly_cost": stats.weekly_cost,
@@ -661,7 +663,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         days = len(stats.daily_activity)
         sections.append(section("DAILY ACTIVITY", table(("Date", "Tokens", "Known cost", "Cost status"), [(day, f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for day, item in sorted(stats.daily_activity.items())], sortable=True), meta=f"{days} {'day' if days == 1 else 'days'}"))
         sections.append(section("SUMMARY STATISTICS", table(("Metric", "Value"), (("Sessions", stats.sessions_count), ("Usage entries", stats.usage_entries), ("Unique models", len(stats.unique_models)), ("Cache read ratio", f"{stats.cache_read_ratio:.1%}" if stats.cache_read_ratio is not None else "N/A"), ("Cache efficiency ratio", f"{stats.cache_efficiency_ratio:.1f}:1" if stats.cache_efficiency_ratio is not None else "N/A"), ("Requests per turn", f"{stats.requests_per_turn:.2f}" if stats.requests_per_turn is not None else "N/A"), ("Tool calls per request", f"{stats.tool_calls_per_request:.2f}" if stats.tool_calls_per_request is not None else "N/A"), ("Tool calls per turn", f"{stats.tool_calls_per_turn:.2f}" if stats.tool_calls_per_turn is not None else "N/A")))))
-        sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Fetched at"), [(source, stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
+        sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Kind", "Fetched at"), [(source, stats.pricing_source_kinds.get(source, "unknown"), stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
         if stats.unresolved_routes:
             sections.append(section("UNRESOLVED METERED ROUTES", table(("Provider", "Model", "Tokens", "Reason"), [(route["provider"], route["model"], f"{route['tokens']:,}", route["reason"]) for route in stats.unresolved_routes], sortable=True)))
         comparison = report.period_comparison.get(agent)

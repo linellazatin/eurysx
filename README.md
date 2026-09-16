@@ -12,7 +12,7 @@ Eurysx reads local agent history and reports tokens, requests, turns, tool calls
 estimated or recorded cost, and pricing provenance. It does not upload usage data
 or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.1.2 is a local CLI, not a hosted service.
+> Eurysx v0.1.3 is a local CLI, not a hosted service.
 
 ## What the name means
 
@@ -244,7 +244,16 @@ to price multiple providers.
 
 Resolution order is: recorded cost, explicit override, the route primary source,
 the route's `otherSources` in order, then unknown. Eurysx never guesses a number
-for an unpriced model.
+for an unpriced model. JSON reports expose `pricing_source_kinds`: `recorded` for
+harness cost, `override` for JSONC prices, `official` for first-party sources,
+and `catalog` for model catalogs. `not_applicable` and `unknown` usage has no
+resolved pricing source.
+
+OpenAI's published pricing has standard, long-context, batch, flex, and fast
+rates. Eurysx does not yet record enough route metadata to choose among them,
+so it has no direct OpenAI pricing source; use an exact override or `models-dev`
+only for a route whose applicable rate you have verified. ChatGPT subscription
+usage remains `N/A` incremental USD.
 
 ### Refreshing and inspecting pricing
 

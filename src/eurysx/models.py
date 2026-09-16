@@ -26,6 +26,7 @@ class UsageEntry:
     pricing_sources: List[str] = None
     cost_status: str = "unknown"
     pricing_source: Optional[str] = None
+    pricing_source_kind: Optional[str] = None
     pricing_fetched_at: Optional[str] = None
     is_aggregated: bool = False
     session_id: Optional[str] = None
@@ -84,6 +85,7 @@ class AgentStats:
     route_breakdown: Dict[str, Dict] = None
     cost_status_counts: Dict[str, int] = None
     pricing_sources: Set[str] = None
+    pricing_source_kinds: Dict[str, str] = None
     pricing_fetched_at: Dict[str, str] = None
     scope_warnings: List[str] = None
     unresolved_routes: List[Dict] = None
@@ -108,6 +110,8 @@ class AgentStats:
             self.route_breakdown = {}
         if self.pricing_sources is None:
             self.pricing_sources = set()
+        if self.pricing_source_kinds is None:
+            self.pricing_source_kinds = {}
         if self.pricing_fetched_at is None:
             self.pricing_fetched_at = {}
         if self.scope_warnings is None:

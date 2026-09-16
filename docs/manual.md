@@ -84,6 +84,8 @@ Collectors normalize usage metadata only. Parser read failures propagate to coll
 
 Pricing precedence is recorded harness cost, explicit override, configured source order, then unknown. Unknown is never free. Exact provider/model matching is required; aliases are provider-scoped. Supported sources are `amazon-bedrock`, `pi-models-store`, and `models-dev`.
 
+JSON agent stats include `pricing_source_kinds` for every resolved source: `recorded` is harness/provider-reported cost, `override` is an explicit JSONC price, `official` is a first-party source, and `catalog` is a model catalog. Subscription-like and unknown usage has no resolved source. OpenAI's public price table has standard, long-context, batch, flex, and fast rates; Eurysx does not record enough route metadata to select one safely, so no direct OpenAI price source is supported. Use an exact override or `models-dev` only for a confirmed metered OpenAI route; ChatGPT subscription usage remains `N/A` incremental USD.
+
 Preferences define agent defaults, exact provider overrides, and optional provider-scoped `modelIdRules`. A rule has exactly one literal `exact` or `prefix` matcher; exact wins, then the longest prefix. Invalid or duplicate exact rules warn and fall back to the provider policy. A rule may override `provider`, `billingMode`, `pricing`, and `budget`. Billing modes are `metered`, `subscription`, `credit`, `quota`, `local`, and `unknown`. Subscription-like modes report `N/A` incremental USD.
 
 ```jsonc
