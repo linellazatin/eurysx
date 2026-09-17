@@ -1,5 +1,6 @@
 import ast
 import json
+import yaml
 import io
 import os
 import sqlite3
@@ -702,6 +703,36 @@ class PricingTests(unittest.TestCase):
             cache = root / "cache"
             app.PricingResolver(root / "pricing.jsonc", cache)
             self.assertTrue(cache.exists())
+
+    def test_litellm_metadata_converts_exact_prices_and_cache_rates(self):
+        data = yaml.safe_load((FIXTURES / "pricing" / "litellm-price-metadata.yaml").read_text())
+        self.assertEqual(app.PricingResolver._parse_litellm_metadata(data, "homelab"), {
+            "homelab/sonnet": {
+                "input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75,
+            },
+        })
+
+    def test_litellm_metadata_rejects_proxy_config_keys(self):
+        with self.assertRaises(ValueError):
+            app.PricingResolver._parse_litellm_metadata(
+                {"model_list": [], "general_settings": {}}, "homelab"
+            )
+
+    def test_litellm_source_uses_configured_provider_without_caching_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "metadata.yaml"
+            path.write_text((FIXTURES / "pricing" / "litellm-price-metadata.yaml").read_text())
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({"sources": {"litellm-proxy": {
+                "enabled": True, "path": str(path), "provider": "homelab",
+            }}}))
+            resolver = app.PricingResolver(config, root / "cache")
+            result = resolver.resolve("homelab", "sonnet")
+            cached = (root / "cache" / "pricing-litellm-proxy.json").read_text()
+        self.assertEqual(result["pricing"]["output"], 15)
+        self.assertEqual(result["source_kind"], "configured")
+        self.assertNotIn(str(path), cached)
 
     def test_disabled_pricing_source_is_ignored(self):
         with tempfile.TemporaryDirectory() as temp:

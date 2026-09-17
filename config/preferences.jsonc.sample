@@ -17,7 +17,7 @@
           "billingMode": "unknown",
           // Set true only with an exact configured pricing source; this is an
           // API-equivalent estimate, not billable or budget spend.
-          "pricing": { "estimateApiEquivalent": false },
+          "pricing": { "source": "litellm-proxy", "estimateApiEquivalent": false },
           "modelIdRules": [{ "prefix": "local.", "billingMode": "local" }]
         }
       }

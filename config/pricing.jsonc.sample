@@ -18,6 +18,12 @@
       "enabled": false,
       "url": "https://models.dev/api.json",
       "refreshDays": 7
+    },
+    "litellm-proxy": {
+      "enabled": false,
+      "path": "/absolute/path/to/litellm-price-metadata.yaml",
+      "provider": "my-litellm-proxy",
+      "refreshDays": 7
     }
   },
   "aliases": {},
