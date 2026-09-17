@@ -1,5 +1,6 @@
 import ast
 import json
+import yaml
 import io
 import os
 import sqlite3
@@ -703,6 +704,71 @@ class PricingTests(unittest.TestCase):
             app.PricingResolver(root / "pricing.jsonc", cache)
             self.assertTrue(cache.exists())
 
+    def test_litellm_metadata_converts_exact_prices_and_cache_rates(self):
+        data = yaml.safe_load((FIXTURES / "pricing" / "litellm-price-metadata.yaml").read_text())
+        self.assertEqual(app.PricingResolver._parse_litellm_metadata(data, "homelab"), {
+            "homelab/sonnet": {
+                "input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75,
+            },
+        })
+
+    def test_litellm_metadata_rejects_proxy_config_keys(self):
+        with self.assertRaises(ValueError):
+            app.PricingResolver._parse_litellm_metadata(
+                {"model_list": [], "general_settings": {}}, "homelab"
+            )
+
+    def test_litellm_source_uses_configured_provider_without_caching_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "metadata.yaml"
+            path.write_text((FIXTURES / "pricing" / "litellm-price-metadata.yaml").read_text())
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({"sources": {"litellm-proxy": {
+                "enabled": True, "path": str(path), "provider": "homelab",
+            }}}))
+            resolver = app.PricingResolver(config, root / "cache")
+            result = resolver.resolve("homelab", "sonnet")
+            cached = (root / "cache" / "pricing-litellm-proxy.json").read_text()
+        self.assertEqual(result["pricing"]["output"], 15)
+        self.assertEqual(result["source_kind"], "configured")
+        self.assertNotIn(str(path), cached)
+        self.assertNotIn("input_cost_per_token", cached)
+
+    def test_litellm_stale_cache_survives_metadata_read_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            cache.mkdir()
+            (cache / "pricing-litellm-proxy.json").write_text(json.dumps({
+                "schema_version": app.PricingResolver.SCHEMA_VERSION, "fetched_at": "2020-01-01T00:00:00",
+                "priority": 100, "models": {"proxy/model": {"input": 1, "output": 2}},
+            }))
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({"sources": {"litellm-proxy": {
+                "enabled": True, "path": str(root / "missing.yaml"), "provider": "proxy",
+            }}}))
+            resolver = app.PricingResolver(config, cache)
+            self.assertEqual(resolver.resolve("proxy", "model")["pricing"]["output"], 2)
+            self.assertTrue(any("using cached pricing" in warning for warning in resolver.warnings))
+
+    def test_litellm_source_requires_non_empty_path_and_provider(self):
+        resolver = app.PricingResolver(Path("missing.jsonc"), Path(tempfile.mkdtemp()))
+        for settings in ({"path": "", "provider": "proxy"}, {"path": "metadata.yaml", "provider": ""}):
+            with self.assertRaises(ValueError):
+                resolver._fetch("litellm-proxy", settings)
+
+    def test_disabled_pricing_source_is_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({"sources": {
+                "models-dev": {"enabled": False},
+            }}))
+            resolver = app.PricingResolver(config, root / "cache")
+
+        self.assertEqual(resolver.models, {})
+
     def test_inspection_mode_reads_cache_without_fetching_or_creating_it(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -928,6 +994,59 @@ class PricingTests(unittest.TestCase):
             self.assertEqual(usage.cost, 7.5)
             self.assertEqual(usage.cost_status, "recorded")
 
+    def test_recorded_actual_cost_and_opted_in_estimate_coexist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            usage = app.UsageEntry(
+                agent="pi", model_id="model", timestamp="2026-08-01T00:00:00Z",
+                input_tokens=10, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=10, cost=7.5,
+                cost_breakdown={"total": 7.5}, provider="provider",
+                cost_status="recorded", estimate_api_equivalent=True,
+            )
+            resolver = app.PricingResolver(Path(temp) / "missing.jsonc", Path(temp) / "cache")
+            resolver._add("provider", "model", {"input": 1, "output": 1}, "local")
+            app.apply_pricing([usage], resolver)
+
+        self.assertEqual(usage.actual_cost, 7.5)
+        self.assertAlmostEqual(usage.api_equivalent_estimate, 0.00001)
+        self.assertEqual(usage.estimate_status, "estimated")
+        self.assertEqual(usage.cost, 7.5)
+        self.assertEqual(usage.estimate_basis["pricing_per_million"], {"input": 1, "output": 1})
+        self.assertIn("calculated_at", usage.estimate_basis)
+
+    def test_estimate_applies_to_every_billing_mode_without_changing_legacy_cost(self):
+        with tempfile.TemporaryDirectory() as temp:
+            resolver = app.PricingResolver(Path(temp) / "missing.jsonc", Path(temp) / "cache")
+            resolver._add("provider", "model", {"input": 1, "output": 1}, "local")
+            usages = [app.UsageEntry(
+                agent="pi", model_id="model", timestamp="2026-08-01T00:00:00Z",
+                input_tokens=10, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=10, cost=0.0,
+                cost_breakdown={}, provider="provider", billing_mode=mode,
+                estimate_api_equivalent=True,
+            ) for mode in ("subscription", "credit", "quota", "local", "unknown", "metered")]
+            app.apply_pricing(usages, resolver)
+
+        self.assertTrue(all(usage.estimate_status == "estimated" for usage in usages))
+        self.assertTrue(all(usage.api_equivalent_estimate == 0.00001 for usage in usages))
+        self.assertTrue(all(usage.cost_status == "not_applicable" for usage in usages[:4]))
+
+    def test_unresolved_opted_in_estimate_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            usage = app.UsageEntry(
+                agent="pi", model_id="missing", timestamp="2026-08-01T00:00:00Z",
+                input_tokens=10, output_tokens=0, cache_read_tokens=0,
+                cache_write_tokens=0, total_tokens=10, cost=0.0,
+                cost_breakdown={}, provider="provider", estimate_api_equivalent=True,
+            )
+            resolver = app.PricingResolver(Path(temp) / "missing.jsonc", Path(temp) / "cache")
+            app.apply_pricing([usage], resolver)
+
+        self.assertEqual(
+            (usage.estimate_status, usage.api_equivalent_estimate, usage.estimate_basis),
+            ("unavailable", None, None),
+        )
+
 
 class CostCoverageTests(unittest.TestCase):
     @staticmethod
@@ -998,6 +1117,43 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIsNone(stats.priced_token_coverage)
         self.assertIn("Metered token coverage:", output.getvalue())
         self.assertIn("N/A", output.getvalue())
+
+    def test_estimates_aggregate_separately_from_legacy_cost_metrics(self):
+        actual = self._usage("recorded", 7.5, 10)
+        actual.actual_cost = 7.5
+        actual.api_equivalent_estimate = 0.00001
+        actual.estimate_status = "estimated"
+        subscription = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
+        subscription.api_equivalent_estimate = 0.00001
+        subscription.estimate_status = "estimated"
+
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [actual, subscription], date(2026, 8, 1), date(2026, 8, 1), "1d"
+        )
+
+        self.assertEqual(getattr(stats, "actual_cost", None), 7.5)
+        self.assertAlmostEqual(getattr(stats, "api_equivalent_estimate", None), 0.00002)
+        self.assertEqual(getattr(stats, "estimate_status_counts", None), {"estimated": 2})
+        self.assertEqual(stats.known_cost, 7.5)
+
+    def test_estimates_do_not_change_coverage_pacing_comparisons_or_cost_statuses(self):
+        usage = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
+        usage.api_equivalent_estimate = 5.0
+        usage.estimate_status = "estimated"
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        self.assertEqual((stats.known_cost, stats.total_cost, stats.priced_token_coverage), (0.0, 0.0, None))
+        self.assertEqual(stats.cost_status_counts, {"not_applicable": 1})
+        self.assertEqual(app.UsageAnalyzer.pacing(stats, [usage], {"usd": 10, "period": "month"}, date(2026, 8, 1))["spent_usd"], 0.0)
+        self.assertEqual(app.UsageAnalyzer.compare_periods(stats, stats, "now", "before")["current"]["known_cost"], 0.0)
+
+    def test_estimate_entries_are_transparent_and_do_not_change_legacy_cost(self):
+        usage = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
+        usage.api_equivalent_estimate = 0.00001
+        usage.estimate_status = "estimated"
+        usage.estimate_basis = {"provider": "proxy", "model": "model", "source": "litellm-proxy"}
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        self.assertEqual(stats.known_cost, 0.0)
+        self.assertEqual(stats.estimate_entries, [{"estimate_usd": 0.00001, **usage.estimate_basis}])
 
     def test_analysis_separates_metered_coverage_from_non_metered_usage(self):
         metered = self._usage("recorded", 1.0, 100)
@@ -1075,17 +1231,33 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIn("partial", terminal.getvalue())
         csv_report = app.build_csv_report(report)
         self.assertIn(
-            "pi,provider,provider,unknown-model,metered,10,N/A,1,0,0,0,unknown",
+            "pi,provider,provider,unknown-model,metered,10,N/A,N/A,N/A,1,0,0,0,unknown",
             csv_report,
         )
         self.assertIn(
-            "pi,provider,provider,partial-model,metered,90,1.5,2,0,0,0,partial",
+            "pi,provider,provider,partial-model,metered,90,1.5,N/A,N/A,2,0,0,0,partial",
             csv_report,
         )
         self.assertIn(
-            "| provider | provider | unknown-model | metered | 10 | N/A | unknown |",
+            "| provider | provider | unknown-model | metered | 10 | N/A | N/A | N/A | unknown |",
             app.build_markdown_report(report),
         )
+
+    def test_all_presenters_label_route_actual_and_estimate_lanes(self):
+        usage = self._usage("recorded", 1.0, 10)
+        usage.actual_cost = 1.0
+        usage.api_equivalent_estimate = 2.0
+        usage.estimate_status = "estimated"
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        report = self._terminal_report(stats)
+        self.assertIn("actual_recorded_cost_usd", app.build_csv_report(report))
+        self.assertIn("2.0", app.build_csv_report(report))
+        self.assertIn("Actual recorded cost", app.build_markdown_report(report))
+        self.assertIn("API-equivalent estimate", app.build_html_reports(report)["pi.html"])
+        with redirect_stdout(io.StringIO()) as terminal:
+            app.print_single_agent_report(report, "pi")
+        daily = terminal.getvalue().split("DAILY ACTIVITY", 1)[1].split("SUMMARY STATISTICS", 1)[0]
+        self.assertIn("API-equivalent estimate", daily)
 
     def test_comparison_leaders_are_shared_by_non_csv_outputs(self):
         stats = app.UsageAnalyzer.analyze_agent(
@@ -1296,6 +1468,8 @@ class GroupingDimensionTests(unittest.TestCase):
     def _bucket(*buckets):
         return {
             "cache_read": 0, "cache_write": 0, "cost": sum(b[1] for b in buckets),
+            "actual_cost": None, "api_equivalent_estimate": None,
+            "estimate_status_counts": {"not_requested": len(buckets)},
             "cost_status_counts": {"recorded": len(buckets)},
             "input": sum(b[0] for b in buckets), "model_requests": len(buckets),
             "model_tool_calls": 0, "model_turns": len(buckets), "output": 0,
@@ -1577,6 +1751,51 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.pricing_provider, "amazon-bedrock")
         self.assertEqual(usage.pricing_model, "gpt-5.6")
         self.assertEqual(usage.pricing_sources, ["amazon-bedrock", "models-dev"])
+
+    def test_observed_litellm_proxy_routes_to_configured_effective_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {"proxy": {
+                "provider": "homelab", "billingMode": "subscription",
+                "pricing": {"source": "litellm-proxy", "estimateApiEquivalent": True},
+            }}}}}))
+            resolver = app.PricingResolver(Path(temp) / "pricing.jsonc", Path(temp) / "cache")
+            resolver._add("homelab", "model", {"input": 1, "output": 1}, "litellm-proxy")
+            usage = self._usage(provider="proxy", model="model")
+            app.apply_pricing([usage], resolver, app.PreferencesResolver(path))
+        self.assertEqual((usage.observed_provider, usage.provider, usage.estimate_status), ("proxy", "homelab", "estimated"))
+        self.assertEqual(usage.estimate_basis["source"], "litellm-proxy")
+
+    def test_estimate_opt_in_is_inherited_and_rule_overridable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {
+                "pricing": {"estimateApiEquivalent": True},
+                "providers": {"litellm": {"modelIdRules": [{
+                    "prefix": "local.", "pricing": {"estimateApiEquivalent": False},
+                }]}},
+            }}}))
+            preferences = app.PreferencesResolver(path)
+            rule_usage = self._usage("litellm", "local.qwen")
+            other_usage = self._usage("litellm", "cloud.model")
+            preferences.apply(rule_usage)
+            preferences.apply(other_usage)
+
+        self.assertEqual(getattr(rule_usage, "estimate_api_equivalent", None), False)
+        self.assertEqual(getattr(other_usage, "estimate_api_equivalent", None), True)
+
+    def test_invalid_estimate_opt_in_warns_and_disables(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {
+                "pricing": {"estimateApiEquivalent": "yes"},
+            }}}))
+            preferences = app.PreferencesResolver(path)
+            usage = self._usage()
+            preferences.apply(usage)
+
+        self.assertEqual(getattr(usage, "estimate_api_equivalent", None), False)
+        self.assertTrue(any("estimateApiEquivalent" in warning for warning in preferences.warnings))
 
     def test_agent_default_applies_to_all_claude_models_without_model_rules(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2163,7 +2382,8 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         report, _ = self._run()
         self.assertEqual(sorted(report), self.TOP_LEVEL_KEYS)
         stats = report["agent_stats"]["pi"]
-        self.assertEqual(sorted(stats), self.AGENT_STATS_KEYS)
+        self.assertTrue(set(self.AGENT_STATS_KEYS).issubset(stats))
+        self.assertTrue({"actual_cost_usd", "api_equivalent_estimate_usd", "estimate_status_counts", "estimate_entries"}.issubset(stats))
 
     def test_json_values_are_the_locked_baseline(self):
         report, _ = self._run()
@@ -2173,7 +2393,16 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             "start": "2026-08-01", "end": "2026-08-01",
             "label": "2026-08-01 to 2026-08-01",
         })
-        self.assertEqual(report["agent_stats"]["pi"], self.EXPECTED_PI_STATS)
+        def legacy(value):
+            if isinstance(value, dict):
+                return {key: legacy(item) for key, item in value.items() if key not in {"actual_cost", "api_equivalent_estimate", "estimate_status_counts"}}
+            if isinstance(value, list):
+                return [legacy(item) for item in value]
+            return value
+        self.assertEqual(
+            legacy({key: report["agent_stats"]["pi"][key] for key in self.EXPECTED_PI_STATS}),
+            self.EXPECTED_PI_STATS,
+        )
 
     def test_cache_ratios_are_present_in_json_and_match_the_terminal(self):
         report, terminal = self._run()
@@ -2286,7 +2515,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.3")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.4")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

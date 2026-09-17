@@ -1,6 +1,7 @@
 """Pricing and preference resolution."""
 
 import json
+import math
 import os
 import re
 import ssl
@@ -10,6 +11,8 @@ import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from .models import UsageEntry
 from .paths import get_eurysx_dirs
@@ -54,6 +57,7 @@ class PricingResolver:
         "amazon-bedrock": "official",
         "models-dev": "catalog",
         "pi-models-store": "catalog",
+        "litellm-proxy": "configured",
     }
 
     def __init__(self, config_path: Optional[Path] = None, cache_dir: Optional[Path] = None,
@@ -165,7 +169,7 @@ class PricingResolver:
         for source, settings in sources.items():
             if isinstance(settings, dict) and settings.get("enabled"):
                 priority = self._source_int(source, settings, "priority", 100)
-            configured.append((priority, source, settings))
+                configured.append((priority, source, settings))
         for priority, source, settings in sorted(configured, key=lambda item: (item[0], item[1])):
             self.source_priorities[source] = priority
             cache_path = self._cache_path(source)
@@ -189,7 +193,7 @@ class PricingResolver:
                     "source": source,
                     "fetched_at": now,
                     "priority": priority,
-                    "config": {k: v for k, v in settings.items() if k not in ("token", "apiKey")},
+                    "config": {} if source == "litellm-proxy" else {k: v for k, v in settings.items() if k not in ("token", "apiKey")},
                     "models": normalized_models,
                 }, indent=2))
                 self._load_cache(source)
@@ -227,7 +231,38 @@ class PricingResolver:
         if source == "pi-models-store":
             path = Path.home() / ".pi" / "agent" / "models-store.json"
             return self._parse_pi_models_store(json.loads(path.read_text()))
+        if source == "litellm-proxy":
+            path, provider = settings.get("path"), settings.get("provider")
+            if not isinstance(path, str) or not path.strip() or not isinstance(provider, str) or not provider.strip():
+                raise ValueError("litellm-proxy requires non-empty path and provider")
+            return self._parse_litellm_metadata(yaml.safe_load(Path(path).read_text()), provider)
         raise ValueError(f"unsupported pricing source: {source}")
+
+    @staticmethod
+    def _parse_litellm_metadata(data: Dict[str, Any], provider: str) -> Dict[str, Dict[str, float]]:
+        if not isinstance(data, dict) or set(data) != {"model_list"} or not isinstance(data["model_list"], list):
+            raise ValueError("metadata must contain only model_list")
+        models = {}
+        fields = {"input_cost_per_token", "output_cost_per_token", "cache_creation_input_token_cost", "cache_read_input_token_cost"}
+        for item in data["model_list"]:
+            if not isinstance(item, dict) or set(item) != {"model_name", "model_info"}:
+                raise ValueError("metadata model entries must contain only model_name and model_info")
+            model, info = item.get("model_name"), item.get("model_info")
+            if not isinstance(model, str) or not model or not isinstance(info, dict) or set(info) - fields:
+                raise ValueError("metadata model_info contains unsupported fields")
+            try:
+                values = {key: float(info.get(key, 0)) for key in fields}
+            except (TypeError, ValueError):
+                continue
+            if any(not math.isfinite(value) or value < 0 for value in values.values()) or not values["input_cost_per_token"] or not values["output_cost_per_token"]:
+                continue
+            models[f"{provider}/{model}"] = {
+                "input": values["input_cost_per_token"] * 1_000_000,
+                "output": values["output_cost_per_token"] * 1_000_000,
+                "cacheRead": values["cache_read_input_token_cost"] * 1_000_000,
+                "cacheWrite": values["cache_creation_input_token_cost"] * 1_000_000,
+            }
+        return models
 
     @staticmethod
     def _parse_pi_models_store(data: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
@@ -465,6 +500,7 @@ class PreferencesResolver:
         usage.pricing_provider = usage.provider
         usage.pricing_model = usage.model_id
         usage.pricing_sources = policy.get("pricingSources", [])
+        usage.estimate_api_equivalent = policy["estimateApiEquivalent"]
 
     def _policy_for(self, agent: str, provider: Optional[str], model_id: str = "") -> Dict[str, Any]:
         agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
@@ -518,7 +554,12 @@ class PreferencesResolver:
         if not isinstance(others, list) or not all(isinstance(item, str) for item in others):
             self._warn(f"preferences {agent}.pricing.otherSources must be a string list")
             others = []
+        estimate_api_equivalent = pricing.get("estimateApiEquivalent", False) if pricing else False
+        if not isinstance(estimate_api_equivalent, bool):
+            self._warn(f"preferences {agent}.pricing.estimateApiEquivalent must be a boolean")
+            estimate_api_equivalent = False
         policy["pricingSources"] = ([source] if source else []) + others if pricing else []
+        policy["estimateApiEquivalent"] = estimate_api_equivalent
         return policy
 
 
@@ -530,6 +571,36 @@ def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
             preferences.apply(usage)
         if usage.is_metric_only:
             continue
+        if usage.cost_status == "recorded":
+            usage.actual_cost = usage.cost
+        if usage.estimate_api_equivalent:
+            resolved = resolver.resolve(
+                usage.pricing_provider or usage.provider,
+                usage.pricing_model or usage.model_id,
+                usage.pricing_sources,
+            )
+            if resolved["pricing"]:
+                usage.api_equivalent_estimate = calculate_cost(
+                    usage.input_tokens, usage.output_tokens,
+                    usage.cache_read_tokens, usage.cache_write_tokens,
+                    resolved["pricing"],
+                )
+                usage.estimate_status = "estimated"
+                usage.estimate_basis = {
+                    "provider": usage.pricing_provider or usage.provider,
+                    "model": usage.pricing_model or usage.model_id,
+                    "source": resolved["source"],
+                    "source_kind": resolved["source_kind"],
+                    "source_fetched_at": resolved["fetched_at"],
+                    "pricing_per_million": resolved["pricing"],
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "calculated_at": datetime.now().isoformat(),
+                }
+            else:
+                usage.estimate_status = "unavailable"
         if usage.cost_status == "recorded":
             if usage.billing_mode != "metered":
                 if preferences:

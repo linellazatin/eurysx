@@ -95,19 +95,23 @@ class UsageAnalyzer:
         
         model_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
             'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
         project_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
             'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
         session_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
             'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
-        daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0, 'cost_status_counts': {}})
+        daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0, 'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {}, 'cost_status_counts': {}})
         route_tokens = defaultdict(lambda: {
-            'tokens': 0, 'cost': 0.0, 'entries': 0, 'cost_status_counts': {}, 'observed_providers': [],
+            'tokens': 0, 'cost': 0.0, 'actual_cost': None, 'api_equivalent_estimate': None,
+            'estimate_status_counts': {}, 'entries': 0, 'cost_status_counts': {}, 'observed_providers': [],
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0,
         })
         sessions = set()
@@ -159,6 +163,22 @@ class UsageAnalyzer:
             stats.cost_status_counts[usage.cost_status] = (
                 stats.cost_status_counts.get(usage.cost_status, 0) + 1
             )
+            stats.estimate_status_counts[usage.estimate_status] = (
+                stats.estimate_status_counts.get(usage.estimate_status, 0) + 1
+            )
+            lane_buckets = (route_data, model_tokens[usage.model_id], project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'])
+            for bucket in lane_buckets:
+                bucket['estimate_status_counts'][usage.estimate_status] = bucket['estimate_status_counts'].get(usage.estimate_status, 0) + 1
+            if usage.actual_cost is not None:
+                stats.actual_cost += usage.actual_cost
+                for bucket in lane_buckets:
+                    bucket['actual_cost'] = (bucket['actual_cost'] or 0.0) + usage.actual_cost
+            if usage.api_equivalent_estimate is not None:
+                stats.api_equivalent_estimate += usage.api_equivalent_estimate
+                for bucket in lane_buckets:
+                    bucket['api_equivalent_estimate'] = (bucket['api_equivalent_estimate'] or 0.0) + usage.api_equivalent_estimate
+            if usage.estimate_status == "estimated" and usage.estimate_basis:
+                stats.estimate_entries.append({"estimate_usd": usage.api_equivalent_estimate, **usage.estimate_basis})
             if usage.cost_status == "unknown":
                 stats.unknown_cost_count += 1
                 if billing_mode == "metered":
@@ -210,6 +230,12 @@ class UsageAnalyzer:
                 if usage_date:
                     date_str = usage_date.strftime('%Y-%m-%d')
                     daily_tokens[date_str]['tokens'] += usage.total_tokens
+                    daily = daily_tokens[date_str]
+                    daily['estimate_status_counts'][usage.estimate_status] = daily['estimate_status_counts'].get(usage.estimate_status, 0) + 1
+                    if usage.actual_cost is not None:
+                        daily['actual_cost'] = (daily['actual_cost'] or 0.0) + usage.actual_cost
+                    if usage.api_equivalent_estimate is not None:
+                        daily['api_equivalent_estimate'] = (daily['api_equivalent_estimate'] or 0.0) + usage.api_equivalent_estimate
                     if usage.cost_status not in ("unknown", "not_applicable"):
                         daily_tokens[date_str]['cost'] += usage.cost
                     daily_tokens[date_str]['cost_status_counts'][usage.cost_status] = (

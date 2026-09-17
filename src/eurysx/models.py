@@ -28,6 +28,11 @@ class UsageEntry:
     pricing_source: Optional[str] = None
     pricing_source_kind: Optional[str] = None
     pricing_fetched_at: Optional[str] = None
+    actual_cost: Optional[float] = None
+    api_equivalent_estimate: Optional[float] = None
+    estimate_status: str = "not_requested"
+    estimate_basis: Optional[Dict[str, Any]] = None
+    estimate_api_equivalent: bool = False
     is_aggregated: bool = False
     session_id: Optional[str] = None
     project_id: Optional[str] = None
@@ -58,6 +63,10 @@ class AgentStats:
     total_tokens: int = 0
     total_cost: float = 0.0
     known_cost: float = 0.0
+    actual_cost: float = 0.0
+    api_equivalent_estimate: float = 0.0
+    estimate_status_counts: Dict[str, int] = None
+    estimate_entries: List[Dict[str, Any]] = None
     daily_cost: float = 0.0
     weekly_cost: float = 0.0
     monthly_cost: float = 0.0
@@ -102,6 +111,10 @@ class AgentStats:
             self.daily_activity = {}
         if self.cost_status_counts is None:
             self.cost_status_counts = {}
+        if self.estimate_status_counts is None:
+            self.estimate_status_counts = {}
+        if self.estimate_entries is None:
+            self.estimate_entries = []
         if self.non_metered_tokens is None:
             self.non_metered_tokens = {}
         if self.billing_mode_tokens is None:
