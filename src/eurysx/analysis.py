@@ -159,6 +159,13 @@ class UsageAnalyzer:
             stats.cost_status_counts[usage.cost_status] = (
                 stats.cost_status_counts.get(usage.cost_status, 0) + 1
             )
+            stats.estimate_status_counts[usage.estimate_status] = (
+                stats.estimate_status_counts.get(usage.estimate_status, 0) + 1
+            )
+            if usage.actual_cost is not None:
+                stats.actual_cost += usage.actual_cost
+            if usage.api_equivalent_estimate is not None:
+                stats.api_equivalent_estimate += usage.api_equivalent_estimate
             if usage.cost_status == "unknown":
                 stats.unknown_cost_count += 1
                 if billing_mode == "metered":

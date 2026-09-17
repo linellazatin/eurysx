@@ -165,7 +165,7 @@ class PricingResolver:
         for source, settings in sources.items():
             if isinstance(settings, dict) and settings.get("enabled"):
                 priority = self._source_int(source, settings, "priority", 100)
-            configured.append((priority, source, settings))
+                configured.append((priority, source, settings))
         for priority, source, settings in sorted(configured, key=lambda item: (item[0], item[1])):
             self.source_priorities[source] = priority
             cache_path = self._cache_path(source)
@@ -465,6 +465,7 @@ class PreferencesResolver:
         usage.pricing_provider = usage.provider
         usage.pricing_model = usage.model_id
         usage.pricing_sources = policy.get("pricingSources", [])
+        usage.estimate_api_equivalent = policy["estimateApiEquivalent"]
 
     def _policy_for(self, agent: str, provider: Optional[str], model_id: str = "") -> Dict[str, Any]:
         agents = self.config.get("agents", {}) if isinstance(self.config, dict) else {}
@@ -518,7 +519,12 @@ class PreferencesResolver:
         if not isinstance(others, list) or not all(isinstance(item, str) for item in others):
             self._warn(f"preferences {agent}.pricing.otherSources must be a string list")
             others = []
+        estimate_api_equivalent = pricing.get("estimateApiEquivalent", False) if pricing else False
+        if not isinstance(estimate_api_equivalent, bool):
+            self._warn(f"preferences {agent}.pricing.estimateApiEquivalent must be a boolean")
+            estimate_api_equivalent = False
         policy["pricingSources"] = ([source] if source else []) + others if pricing else []
+        policy["estimateApiEquivalent"] = estimate_api_equivalent
         return policy
 
 
@@ -530,6 +536,36 @@ def apply_pricing(usages: List[UsageEntry], resolver: PricingResolver,
             preferences.apply(usage)
         if usage.is_metric_only:
             continue
+        if usage.cost_status == "recorded":
+            usage.actual_cost = usage.cost
+        if usage.estimate_api_equivalent:
+            resolved = resolver.resolve(
+                usage.pricing_provider or usage.provider,
+                usage.pricing_model or usage.model_id,
+                usage.pricing_sources,
+            )
+            if resolved["pricing"]:
+                usage.api_equivalent_estimate = calculate_cost(
+                    usage.input_tokens, usage.output_tokens,
+                    usage.cache_read_tokens, usage.cache_write_tokens,
+                    resolved["pricing"],
+                )
+                usage.estimate_status = "estimated"
+                usage.estimate_basis = {
+                    "provider": usage.pricing_provider or usage.provider,
+                    "model": usage.pricing_model or usage.model_id,
+                    "source": resolved["source"],
+                    "source_kind": resolved["source_kind"],
+                    "source_fetched_at": resolved["fetched_at"],
+                    "pricing_per_million": resolved["pricing"],
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "calculated_at": datetime.now().isoformat(),
+                }
+            else:
+                usage.estimate_status = "unavailable"
         if usage.cost_status == "recorded":
             if usage.billing_mode != "metered":
                 if preferences:
