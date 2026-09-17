@@ -1,29 +1,20 @@
 # Changelog
 
-## [0.1.4] - Actual cost and API-equivalent estimates
+## [0.1.4] - Cost lanes and LiteLLM estimates
 
 ### Added
 
-- Opt-in API-equivalent estimates for exact configured routes across every
-  billing mode, including alongside harness-recorded actual cost.
-- `litellm-proxy` pricing from a user-created sanitized YAML metadata file;
-  Eurysx never reads a LiteLLM proxy configuration.
-- Separate actual-cost and estimate lanes with pricing/token calculation
-  provenance; estimates do not affect legacy known-cost totals, coverage,
-  pacing, or comparisons.
-- Additive JSON estimate fields and metadata-only per-estimate provenance,
-  plus distinct terminal, CSV, Markdown, and HTML actual/estimate output in
-  totals and breakdowns.
+- Opt-in API-equivalent estimates with separate recorded-cost provenance.
+- Sanitized LiteLLM YAML metadata pricing; proxy configs and credentials are never read.
+- Additive JSON estimate fields and actual/estimate columns in all report formats.
 
 ### Changed
 
-- Configuration documentation now lives in the User manual; README links to it.
+- Configuration reference consolidated in `docs/manual.md`.
 
 ### Tests
 
-- Coverage for estimate opt-in validation, exact-price resolution, all billing
-  modes, unavailable estimates, recorded-cost coexistence, isolated totals, and
-  LiteLLM cache privacy, stale-cache fallback, and effective-provider routing.
+- Added coverage for estimate isolation, routing, validation, privacy, and stale-cache fallback.
 
 ## [0.1.3] - Pricing source reassessment
 
@@ -87,41 +78,23 @@
 
 ### Added
 
-- `--model` and `--provider` selectors, SQL WHERE filters in `store.events()`,
-  combinable with `--agent` and the period selectors; NULL providers match
-  `--provider unknown` (COALESCE).
-- `--billing-mode` (metered|subscription|credit|quota|local|unknown), applied
-  post-pricing via the `analyze_agent(billing_modes=...)` hook: billing_mode
-  is a pricing-time artifact flipped to `metered` on recorded-cost conflict,
-  so SQL cannot pre-filter it.
-- `period_comparison`: bounded runs compare the current period against the
-  same-length previous window (`_previous_window`, same filters) — terminal
-  `PERIOD COMPARISON` (tokens, cost, entries, requests + Δ) and an additive
-  JSON block; all-time runs omit it.
+- `--model` and `--provider` selectors, SQL WHERE filters in `store.events()`, combinable with `--agent` and the period selectors; NULL providers match `--provider unknown` (COALESCE).
+- `--billing-mode` (metered|subscription|credit|quota|local|unknown), applied post-pricing via the `analyze_agent(billing_modes=...)` hook: billing_mode is a pricing-time artifact flipped to `metered` on recorded-cost conflict, so SQL cannot pre-filter it.
+- `period_comparison`: bounded runs compare the current period against the same-length previous window (`_previous_window`, same filters) — terminal `PERIOD COMPARISON` (tokens, cost, entries, requests + Δ) and an additive JSON block; all-time runs omit it.
 
 ### Changed
 
-- OpenCode timestamps stored as ISO-8601 (parser v3); epoch-millis rows
-  re-collect on refresh.
-- Claude Code aggregate scope warning now via a store presence check, so it
-  survives SQL filtering.
-- `store.events()` filters agents, dates, models, and providers in SQL; the
-  Python date filter remains as the equivalence reference.
+- OpenCode timestamps stored as ISO-8601 (parser v3); epoch-millis rows re-collect on refresh.
+- Claude Code aggregate scope warning now via a store presence check, so it survives SQL filtering.
+- `store.events()` filters agents, dates, models, and providers in SQL; the Python date filter remains as the equivalence reference.
 - Indices on provider, model, project, session (additive, idempotent).
-- `AgentStats` gained `project_breakdown`/`session_breakdown` (model_breakdown
-  shape; `unknown` bucket for unattributed rows), shown in terminal as
-  `BREAKDOWN BY SESSION`/`BREAKDOWN BY PROJECT` and in JSON; unattributed-only
-  sections print `No ... attribution available.`.
+- `AgentStats` gained `project_breakdown`/`session_breakdown` (model_breakdown shape; `unknown` bucket for unattributed rows), shown in terminal as `BREAKDOWN BY SESSION`/`BREAKDOWN BY PROJECT` and in JSON; unattributed-only sections print `No ... attribution available.`.
 
 ### Tests
 
-- SQL-vs-Python equivalence, presence check, indices, grouping (incl.
-  unattributed), two-period reuse/disjointness.
-- Per-selector and combination tests incl.
-  recorded-cost-flips-to-metered; previous-window math; simulated-CLI
-  comparison asserting values and delta.
-- Phase 1 baseline extended for additive keys `project_breakdown`,
-  `session_breakdown`, `period_comparison`; Phase 6 pins the final contract.
+- SQL-vs-Python equivalence, presence check, indices, grouping (incl. unattributed), two-period reuse/disjointness.
+- Per-selector and combination tests incl. recorded-cost-flips-to-metered; previous-window math; simulated-CLI comparison asserting values and delta.
+- Phase 1 baseline extended for additive keys `project_breakdown`, `session_breakdown`, `period_comparison`; Phase 6 pins the final contract.
 
 ## [0.0.4] - Report baseline + result seams
 
@@ -141,29 +114,21 @@
 
 ### Added
 
-- Incremental per-source collection: collectors enumerate raw sources with stat
-  fingerprints and a parser version; the CLI skips unchanged sources and
-  transactionally replaces only sources that moved.
-- Best-effort project attribution: Pi session-header `cwd`, Codex
-  `session_meta.cwd`, and OpenCode's `session.directory` (when present) are
-  stored per event as `project_id`; Claude Code aggregate rows stay unattributed.
-- Failed source refreshes keep their last good events, record the error on the
-  source row, and `report` warns when last-good data is being shown.
+- Incremental per-source collection: collectors enumerate raw sources with stat fingerprints and a parser version; the CLI skips unchanged sources and transactionally replaces only sources that moved.
+- Best-effort project attribution: Pi session-header `cwd`, Codex `session_meta.cwd`, and OpenCode's `session.directory` (when present) are stored per event as `project_id`; Claude Code aggregate rows stay unattributed.
+- Failed source refreshes keep their last good events, record the error on the source row, and `report` warns when last-good data is being shown.
 
 ### Changed
 
-- Default and `report` commands both read usage back from the store after
-  collection; legacy per-agent bulk `collector:<agent>` store rows are purged.
-- Collectors propagate read errors instead of printing and returning partial
-  data. Pi, Codex, and OpenCode parser versions moved to 2.
+- Default and `report` commands both read usage back from the store after collection; legacy per-agent bulk `collector:<agent>` store rows are purged.
+- Collectors propagate read errors instead of printing and returning partial data. Pi, Codex, and OpenCode parser versions moved to 2.
 
 ## [0.0.2] - Local store implementation + module restructure
 
 ### Added
 
 - Local SQLite usage storage with decimal-text recorded costs.
-- `eurysx collect` and `eurysx report` workflows; stored reports do not collect
-  agent history.
+- `eurysx collect` and `eurysx report` workflows; stored reports do not collect agent history.
 
 ### Changed
 
@@ -193,9 +158,6 @@
 - All-time reports derive cost-rate periods from observed usage dates.
 - Reports separate metered token coverage from subscription, credit, quota, local, and unknown usage.
 - Codex preserves recorded route-provider metadata; provider-qualified prices no longer cross-match.
-- Preferences now use agent defaults and provider overrides; `aws-bedrock` is
-  renamed to `amazon-bedrock` in pricing configuration and cache provenance.
-- Configuration documentation and samples now distinguish required enabled-source
-  settings from optional agent and provider policies.
-- OpenCode collector parity now uses a tracked, sanitized SQL fixture that builds
-  its temporary SQLite database during tests.
+- Preferences now use agent defaults and provider overrides; `aws-bedrock` is renamed to `amazon-bedrock` in pricing configuration and cache provenance.
+- Configuration documentation and samples now distinguish required enabled-source settings from optional agent and provider policies.
+- OpenCode collector parity now uses a tracked, sanitized SQL fixture that builds its temporary SQLite database during tests.
