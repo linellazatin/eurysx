@@ -333,19 +333,37 @@ allocation, and no third-party catalog expansion.
 Allow users to inspect a useful retail-equivalent estimate without presenting
 it as an invoice or changing billing classification.
 
-- [ ] Extend the usage/result model additively so actual cost and estimated
-  cost cannot be confused.
-- [ ] Define estimate basis and provenance, including provider, model, source,
+- [x] Extend the usage/result model additively: retain existing
+  cost/known-cost fields and add separate actual-cost and API-equivalent
+  estimate lanes so the values cannot be confused.
+- [x] Define estimate basis and provenance, including provider, model, source,
   cache fields, and calculation timestamp.
-- [ ] Add an opt-in API-equivalent estimate for subscription-backed usage when
-  exact model/provider pricing exists.
-- [ ] Keep subscription, credit, quota, and local billing modes non-metered;
-  estimates must not become known cost, pacing spend, or budget consumption.
-- [ ] Render estimate and actual-cost labels consistently in terminal, JSON,
+- [x] Add an opt-in API-equivalent estimate for any billing policy when exact
+  model/provider pricing exists; an estimate may coexist with recorded actual
+  cost.
+- [x] Add `litellm-proxy`, an explicit-path sanitized YAML metadata source
+  (using PyYAML), never a LiteLLM proxy config. Require `path` and `provider`
+  for exact `<configured provider>/<model_name>` routes; its provider must
+  match the effective `provider` preference mapped from the observed proxy
+  name, so custom proxies stay distinguishable. Read only
+  `model_list[].model_name` and supported `model_info` per-token cost fields;
+  cache normalized prices, not proxy configuration. Classify it as configured
+  proxy metadata and use it only for API-equivalent estimates, never
+  provider-reported or actual invoiced cost.
+- [x] Keep subscription, credit, quota, and local billing modes non-metered;
+  estimates do not become known cost, pacing spend, or budget consumption.
+- [x] Render estimate and actual-cost labels consistently in terminal, JSON,
   CSV, Markdown, and HTML outputs.
-- [ ] Preserve the stable JSON contract through additive fields and document
+- [x] Preserve the stable JSON contract through additive fields and document
   null/unknown behavior.
-- [ ] Add tests proving estimates do not affect known-cost totals, coverage,
+- [x] Consolidate configuration documentation in `docs/manual.md`: move
+  README's `preferences.jsonc`, `pricing.jsonc`, and pricing-refresh sections
+  there; document every fixed-value option and its valid values; add complete
+  samples for defaults, metered Bedrock, custom-provider LiteLLM proxy
+  estimates, local, and subscription routes. Reduce README to a short User
+  manual link. Keep config-file and manual examples aligned with the shipped
+  samples.
+- [x] Add tests proving estimates do not affect known-cost totals, coverage,
   pacing, comparisons, or cost-status counts.
 
 Non-goal: dividing subscription fees by tokens or inferring a per-token
@@ -406,9 +424,9 @@ credits/allowances into USD without documented provider rates.
 - [ ] Consider provider token-count APIs or local tokenizers only for a future
   live/preflight instrumentation mode. Label results as estimates and never
   rewrite completed harness usage.
-- [ ] Reassess LiteLLM, OpenRouter, and other third-party catalogs only after
-  official sources and provenance semantics are complete; require explicit
-  route configuration and clearly mark catalog estimates.
+- [ ] Reassess OpenRouter and other third-party catalogs only after official
+  sources and provenance semantics are complete; require explicit route
+  configuration and clearly mark catalog estimates.
 - [ ] Keep subscription-fee allocation deferred until a provider exposes actual
   usage cost and reliable usage-to-session attribution.
 

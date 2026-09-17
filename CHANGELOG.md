@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.4] - Actual cost and API-equivalent estimates
+
+### Added
+
+- Opt-in API-equivalent estimates for exact configured routes across every
+  billing mode, including alongside harness-recorded actual cost.
+- `litellm-proxy` pricing from a user-created sanitized YAML metadata file;
+  Eurysx never reads a LiteLLM proxy configuration.
+- Separate actual-cost and estimate lanes with pricing/token calculation
+  provenance; estimates do not affect legacy known-cost totals, coverage,
+  pacing, or comparisons.
+- Additive JSON estimate fields and metadata-only per-estimate provenance,
+  plus distinct terminal, CSV, Markdown, and HTML actual/estimate output in
+  totals and breakdowns.
+
+### Changed
+
+- Configuration documentation now lives in the User manual; README links to it.
+
+### Tests
+
+- Coverage for estimate opt-in validation, exact-price resolution, all billing
+  modes, unavailable estimates, recorded-cost coexistence, isolated totals, and
+  LiteLLM cache privacy, stale-cache fallback, and effective-provider routing.
+
 ## [0.1.3] - Pricing source reassessment
 
 ### Fixed
