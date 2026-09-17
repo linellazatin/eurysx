@@ -66,6 +66,11 @@ def _cost_display(data: Dict) -> str:
     return f"{cost} (partial)" if status == "partial" else cost
 
 
+def _lane_display(data: Dict, name: str) -> str:
+    value = data.get(name)
+    return "N/A" if value is None else f"${value:,.6f}"
+
+
 def _comparison_leaders(report: AnalysisReport) -> Dict:
     """Return deterministic token leaders from the existing route breakdowns."""
     agents = {}
@@ -174,6 +179,8 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"),
         ("GRAND TOTAL TOKENS", f"{stats.total_tokens:,}"),
         ("KNOWN COST", f"${stats.known_cost:,.6f}"),
+        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.actual_cost else "N/A"),
+        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.api_equivalent_estimate else "N/A"),
     ))
     
     # ===== BREAKDOWN BY MODEL SECTION =====
@@ -335,7 +342,9 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     actual_cost = stats.known_cost
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
     cost_rows = [
-        ("Known reported or estimated cost", f"${actual_cost:,.6f}"),
+        ("Legacy known cost", f"${actual_cost:,.6f}"),
+        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.actual_cost else "N/A"),
+        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.api_equivalent_estimate else "N/A"),
         ("Unknown-cost entries", f"{stats.unknown_cost_count:,}"),
         ("Unknown metered-cost tokens", f"{stats.unknown_cost_tokens:,}"),
         ("Metered token coverage", coverage),
@@ -492,6 +501,10 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "total_tokens": stats.total_tokens,
         "total_cost": stats.total_cost,
         "known_cost": stats.known_cost,
+        "actual_cost_usd": stats.actual_cost,
+        "api_equivalent_estimate_usd": stats.api_equivalent_estimate,
+        "estimate_status_counts": stats.estimate_status_counts,
+        "estimate_entries": stats.estimate_entries,
         "unknown_cost_count": stats.unknown_cost_count,
         "unknown_cost_tokens": stats.unknown_cost_tokens,
         "priced_token_coverage": stats.priced_token_coverage,
@@ -529,14 +542,14 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
 def build_csv_report(report: AnalysisReport) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
+    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "actual_recorded_cost_usd", "api_equivalent_estimate_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
     for agent, stats in sorted(report.agent_stats.items()):
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
             status = _cost_status(data)
             cost = data["cost"] if status in ("known", "partial") else "N/A"
-            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
+            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
     return output.getvalue()
 
 
@@ -549,11 +562,11 @@ def build_markdown_report(report: AnalysisReport) -> str:
     for index, leader in enumerate(leaders["combined"], 1):
         lines.append(f"| {index} | {leader['provider']} | {leader['model']} | {leader['tokens']:,} |")
     for agent, stats in sorted(report.agent_stats.items()):
-        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Known cost: ${stats.known_cost:.6f}", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Cost status |", "| --- | --- | --- | --- | ---: | ---: | --- |"]
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Legacy known cost: ${stats.known_cost:.6f}", f"Actual recorded cost: ${stats.actual_cost:.6f}" if stats.actual_cost else "Actual recorded cost: N/A", f"API-equivalent estimate: ${stats.api_equivalent_estimate:.6f}" if stats.api_equivalent_estimate else "API-equivalent estimate: N/A", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Actual recorded | API-equivalent estimate | Cost status |", "| --- | --- | --- | --- | ---: | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
-            lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_cost_status(data)} |")
+            lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_lane_display(data, 'actual_cost')} | {_lane_display(data, 'api_equivalent_estimate')} | {_cost_status(data)} |")
     return "\n".join(lines) + "\n"
 
 
@@ -644,7 +657,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
     for agent, stats in agents:
         display = report.agent_displays.get(agent)
         period = f"{display.start_date} to {display.end_date} ({display.label})" if display else report.period_label
-        total = table(("Metric", "Value"), (("Model requests", f"{stats.total_model_requests:,}"), ("Model turns", f"{stats.total_model_turns:,}"), ("Model tool calls", f"{stats.total_model_tool_calls:,}"), ("Input tokens", f"{stats.total_input_tokens:,}"), ("Output tokens", f"{stats.total_output_tokens:,}"), ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"), ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"), ("Grand total tokens", f"{stats.total_tokens:,}"), ("Known cost", cost(stats, stats.known_cost)), ("Cost context", cost_context(stats))))
+        total = table(("Metric", "Value"), (("Model requests", f"{stats.total_model_requests:,}"), ("Model turns", f"{stats.total_model_turns:,}"), ("Model tool calls", f"{stats.total_model_tool_calls:,}"), ("Input tokens", f"{stats.total_input_tokens:,}"), ("Output tokens", f"{stats.total_output_tokens:,}"), ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"), ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"), ("Grand total tokens", f"{stats.total_tokens:,}"), ("Known cost", cost(stats, stats.known_cost)), ("Actual recorded cost", _lane_display({"value": stats.actual_cost} if stats.actual_cost else {}, "value")), ("API-equivalent estimate", _lane_display({"value": stats.api_equivalent_estimate} if stats.api_equivalent_estimate else {}, "value")), ("Cost context", cost_context(stats))))
         sections = [f"<h1>{text(AGENT_NAMES.get(agent, agent))}</h1><p>Analysis period: {text(period)}</p>", section("TOTAL USAGE", total, open=True)]
         for warning in stats.scope_warnings:
             sections.append(f"<p>Warning: {text(warning)}</p>")
@@ -663,7 +676,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         days = len(stats.daily_activity)
         sections.append(section("DAILY ACTIVITY", table(("Date", "Tokens", "Known cost", "Cost status"), [(day, f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for day, item in sorted(stats.daily_activity.items())], sortable=True), meta=f"{days} {'day' if days == 1 else 'days'}"))
         sections.append(section("SUMMARY STATISTICS", table(("Metric", "Value"), (("Sessions", stats.sessions_count), ("Usage entries", stats.usage_entries), ("Unique models", len(stats.unique_models)), ("Cache read ratio", f"{stats.cache_read_ratio:.1%}" if stats.cache_read_ratio is not None else "N/A"), ("Cache efficiency ratio", f"{stats.cache_efficiency_ratio:.1f}:1" if stats.cache_efficiency_ratio is not None else "N/A"), ("Requests per turn", f"{stats.requests_per_turn:.2f}" if stats.requests_per_turn is not None else "N/A"), ("Tool calls per request", f"{stats.tool_calls_per_request:.2f}" if stats.tool_calls_per_request is not None else "N/A"), ("Tool calls per turn", f"{stats.tool_calls_per_turn:.2f}" if stats.tool_calls_per_turn is not None else "N/A")))))
-        sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Kind", "Fetched at"), [(source, stats.pricing_source_kinds.get(source, "unknown"), stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
+        sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Kind", "Fetched at"), [(source, stats.pricing_source_kinds.get(source, "unknown"), stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
         if stats.unresolved_routes:
             sections.append(section("UNRESOLVED METERED ROUTES", table(("Provider", "Model", "Tokens", "Reason"), [(route["provider"], route["model"], f"{route['tokens']:,}", route["reason"]) for route in stats.unresolved_routes], sortable=True)))
         comparison = report.period_comparison.get(agent)

@@ -107,7 +107,8 @@ class UsageAnalyzer:
         })
         daily_tokens = defaultdict(lambda: {'tokens': 0, 'cost': 0.0, 'cost_status_counts': {}})
         route_tokens = defaultdict(lambda: {
-            'tokens': 0, 'cost': 0.0, 'entries': 0, 'cost_status_counts': {}, 'observed_providers': [],
+            'tokens': 0, 'cost': 0.0, 'actual_cost': None, 'api_equivalent_estimate': None,
+            'entries': 0, 'cost_status_counts': {}, 'observed_providers': [],
             'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0,
         })
         sessions = set()
@@ -164,8 +165,12 @@ class UsageAnalyzer:
             )
             if usage.actual_cost is not None:
                 stats.actual_cost += usage.actual_cost
+                route_data['actual_cost'] = (route_data['actual_cost'] or 0.0) + usage.actual_cost
             if usage.api_equivalent_estimate is not None:
                 stats.api_equivalent_estimate += usage.api_equivalent_estimate
+                route_data['api_equivalent_estimate'] = (route_data['api_equivalent_estimate'] or 0.0) + usage.api_equivalent_estimate
+            if usage.estimate_status == "estimated" and usage.estimate_basis:
+                stats.estimate_entries.append({"estimate_usd": usage.api_equivalent_estimate, **usage.estimate_basis})
             if usage.cost_status == "unknown":
                 stats.unknown_cost_count += 1
                 if billing_mode == "metered":

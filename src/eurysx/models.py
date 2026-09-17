@@ -66,6 +66,7 @@ class AgentStats:
     actual_cost: float = 0.0
     api_equivalent_estimate: float = 0.0
     estimate_status_counts: Dict[str, int] = None
+    estimate_entries: List[Dict[str, Any]] = None
     daily_cost: float = 0.0
     weekly_cost: float = 0.0
     monthly_cost: float = 0.0
@@ -112,6 +113,8 @@ class AgentStats:
             self.cost_status_counts = {}
         if self.estimate_status_counts is None:
             self.estimate_status_counts = {}
+        if self.estimate_entries is None:
+            self.estimate_entries = []
         if self.non_metered_tokens is None:
             self.non_metered_tokens = {}
         if self.billing_mode_tokens is None:

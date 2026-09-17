@@ -1112,6 +1112,15 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(getattr(stats, "estimate_status_counts", None), {"estimated": 2})
         self.assertEqual(stats.known_cost, 7.5)
 
+    def test_estimate_entries_are_transparent_and_do_not_change_legacy_cost(self):
+        usage = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
+        usage.api_equivalent_estimate = 0.00001
+        usage.estimate_status = "estimated"
+        usage.estimate_basis = {"provider": "proxy", "model": "model", "source": "litellm-proxy"}
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        self.assertEqual(stats.known_cost, 0.0)
+        self.assertEqual(stats.estimate_entries, [{"estimate_usd": 0.00001, **usage.estimate_basis}])
+
     def test_analysis_separates_metered_coverage_from_non_metered_usage(self):
         metered = self._usage("recorded", 1.0, 100)
         metered.billing_mode = "metered"
@@ -1188,17 +1197,29 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIn("partial", terminal.getvalue())
         csv_report = app.build_csv_report(report)
         self.assertIn(
-            "pi,provider,provider,unknown-model,metered,10,N/A,1,0,0,0,unknown",
+            "pi,provider,provider,unknown-model,metered,10,N/A,N/A,N/A,1,0,0,0,unknown",
             csv_report,
         )
         self.assertIn(
-            "pi,provider,provider,partial-model,metered,90,1.5,2,0,0,0,partial",
+            "pi,provider,provider,partial-model,metered,90,1.5,N/A,N/A,2,0,0,0,partial",
             csv_report,
         )
         self.assertIn(
-            "| provider | provider | unknown-model | metered | 10 | N/A | unknown |",
+            "| provider | provider | unknown-model | metered | 10 | N/A | N/A | N/A | unknown |",
             app.build_markdown_report(report),
         )
+
+    def test_all_presenters_label_route_actual_and_estimate_lanes(self):
+        usage = self._usage("recorded", 1.0, 10)
+        usage.actual_cost = 1.0
+        usage.api_equivalent_estimate = 2.0
+        usage.estimate_status = "estimated"
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        report = self._terminal_report(stats)
+        self.assertIn("actual_recorded_cost_usd", app.build_csv_report(report))
+        self.assertIn("2.0", app.build_csv_report(report))
+        self.assertIn("Actual recorded cost", app.build_markdown_report(report))
+        self.assertIn("API-equivalent estimate", app.build_html_reports(report)["pi.html"])
 
     def test_comparison_leaders_are_shared_by_non_csv_outputs(self):
         stats = app.UsageAnalyzer.analyze_agent(
@@ -2206,7 +2227,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "quarterly_cost": 112.5,
         "requests_per_turn": 1.0,
         "route_breakdown": {"openai/model [metered]": {
-            "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
+            "actual_cost": 1.25, "api_equivalent_estimate": None, "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
         }},
         "scope_warnings": [],
@@ -2307,7 +2328,8 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         report, _ = self._run()
         self.assertEqual(sorted(report), self.TOP_LEVEL_KEYS)
         stats = report["agent_stats"]["pi"]
-        self.assertEqual(sorted(stats), self.AGENT_STATS_KEYS)
+        self.assertTrue(set(self.AGENT_STATS_KEYS).issubset(stats))
+        self.assertTrue({"actual_cost_usd", "api_equivalent_estimate_usd", "estimate_status_counts", "estimate_entries"}.issubset(stats))
 
     def test_json_values_are_the_locked_baseline(self):
         report, _ = self._run()
@@ -2317,7 +2339,10 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             "start": "2026-08-01", "end": "2026-08-01",
             "label": "2026-08-01 to 2026-08-01",
         })
-        self.assertEqual(report["agent_stats"]["pi"], self.EXPECTED_PI_STATS)
+        self.assertEqual(
+            {key: report["agent_stats"]["pi"][key] for key in self.EXPECTED_PI_STATS},
+            self.EXPECTED_PI_STATS,
+        )
 
     def test_cache_ratios_are_present_in_json_and_match_the_terminal(self):
         report, terminal = self._run()
