@@ -1254,6 +1254,10 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIn("2.0", app.build_csv_report(report))
         self.assertIn("Actual recorded cost", app.build_markdown_report(report))
         self.assertIn("API-equivalent estimate", app.build_html_reports(report)["pi.html"])
+        with redirect_stdout(io.StringIO()) as terminal:
+            app.print_single_agent_report(report, "pi")
+        daily = terminal.getvalue().split("DAILY ACTIVITY", 1)[1].split("SUMMARY STATISTICS", 1)[0]
+        self.assertIn("API-equivalent estimate", daily)
 
     def test_comparison_leaders_are_shared_by_non_csv_outputs(self):
         stats = app.UsageAnalyzer.analyze_agent(

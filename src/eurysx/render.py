@@ -300,9 +300,9 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     print(f"{color}{'=' * 80}{Colors.reset}")
     if stats.daily_activity:
         _print_table(
-            ("Date", "Tokens", "Known cost", "Cost status"),
+            ("Date", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"),
             [
-                (activity_date, f"{data['tokens']:,}", _cost_display(data), _cost_status(data))
+                (activity_date, f"{data['tokens']:,}", _cost_display(data), _lane_display(data, "actual_cost"), _lane_display(data, "api_equivalent_estimate"), _cost_status(data))
                 for activity_date, data in sorted(stats.daily_activity.items())
             ],
         )
