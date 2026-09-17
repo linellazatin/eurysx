@@ -1112,6 +1112,16 @@ class CostCoverageTests(unittest.TestCase):
         self.assertEqual(getattr(stats, "estimate_status_counts", None), {"estimated": 2})
         self.assertEqual(stats.known_cost, 7.5)
 
+    def test_estimates_do_not_change_coverage_pacing_comparisons_or_cost_statuses(self):
+        usage = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
+        usage.api_equivalent_estimate = 5.0
+        usage.estimate_status = "estimated"
+        stats = app.UsageAnalyzer.analyze_agent("pi", [usage], date(2026, 8, 1), date(2026, 8, 1), "1d")
+        self.assertEqual((stats.known_cost, stats.total_cost, stats.priced_token_coverage), (0.0, 0.0, None))
+        self.assertEqual(stats.cost_status_counts, {"not_applicable": 1})
+        self.assertEqual(app.UsageAnalyzer.pacing(stats, [usage], {"usd": 10, "period": "month"}, date(2026, 8, 1))["spent_usd"], 0.0)
+        self.assertEqual(app.UsageAnalyzer.compare_periods(stats, stats, "now", "before")["current"]["known_cost"], 0.0)
+
     def test_estimate_entries_are_transparent_and_do_not_change_legacy_cost(self):
         usage = self._usage("not_applicable", 0.0, 10, billing_mode="subscription")
         usage.api_equivalent_estimate = 0.00001
@@ -2455,7 +2465,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.3")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.4")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

@@ -1,6 +1,6 @@
 {
   // All sources are disabled by default. Copy this as
-  // config/pricing.jsonc in this Eurysx checkout; see README.md.
+  // config/pricing.jsonc in this Eurysx checkout; see docs/manual.md.
   // Enable only sources you trust.
   "schemaVersion": 2,
   "sources": {
