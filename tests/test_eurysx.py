@@ -733,6 +733,30 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(result["pricing"]["output"], 15)
         self.assertEqual(result["source_kind"], "configured")
         self.assertNotIn(str(path), cached)
+        self.assertNotIn("input_cost_per_token", cached)
+
+    def test_litellm_stale_cache_survives_metadata_read_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            cache.mkdir()
+            (cache / "pricing-litellm-proxy.json").write_text(json.dumps({
+                "schema_version": app.PricingResolver.SCHEMA_VERSION, "fetched_at": "2020-01-01T00:00:00",
+                "priority": 100, "models": {"proxy/model": {"input": 1, "output": 2}},
+            }))
+            config = root / "pricing.jsonc"
+            config.write_text(json.dumps({"sources": {"litellm-proxy": {
+                "enabled": True, "path": str(root / "missing.yaml"), "provider": "proxy",
+            }}}))
+            resolver = app.PricingResolver(config, cache)
+            self.assertEqual(resolver.resolve("proxy", "model")["pricing"]["output"], 2)
+            self.assertTrue(any("using cached pricing" in warning for warning in resolver.warnings))
+
+    def test_litellm_source_requires_non_empty_path_and_provider(self):
+        resolver = app.PricingResolver(Path("missing.jsonc"), Path(tempfile.mkdtemp()))
+        for settings in ({"path": "", "provider": "proxy"}, {"path": "metadata.yaml", "provider": ""}):
+            with self.assertRaises(ValueError):
+                resolver._fetch("litellm-proxy", settings)
 
     def test_disabled_pricing_source_is_ignored(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1440,6 +1464,8 @@ class GroupingDimensionTests(unittest.TestCase):
     def _bucket(*buckets):
         return {
             "cache_read": 0, "cache_write": 0, "cost": sum(b[1] for b in buckets),
+            "actual_cost": None, "api_equivalent_estimate": None,
+            "estimate_status_counts": {"not_requested": len(buckets)},
             "cost_status_counts": {"recorded": len(buckets)},
             "input": sum(b[0] for b in buckets), "model_requests": len(buckets),
             "model_tool_calls": 0, "model_turns": len(buckets), "output": 0,
@@ -1721,6 +1747,20 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(usage.pricing_provider, "amazon-bedrock")
         self.assertEqual(usage.pricing_model, "gpt-5.6")
         self.assertEqual(usage.pricing_sources, ["amazon-bedrock", "models-dev"])
+
+    def test_observed_litellm_proxy_routes_to_configured_effective_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {"codex": {"providers": {"proxy": {
+                "provider": "homelab", "billingMode": "subscription",
+                "pricing": {"source": "litellm-proxy", "estimateApiEquivalent": True},
+            }}}}}))
+            resolver = app.PricingResolver(Path(temp) / "pricing.jsonc", Path(temp) / "cache")
+            resolver._add("homelab", "model", {"input": 1, "output": 1}, "litellm-proxy")
+            usage = self._usage(provider="proxy", model="model")
+            app.apply_pricing([usage], resolver, app.PreferencesResolver(path))
+        self.assertEqual((usage.observed_provider, usage.provider, usage.estimate_status), ("proxy", "homelab", "estimated"))
+        self.assertEqual(usage.estimate_basis["source"], "litellm-proxy")
 
     def test_estimate_opt_in_is_inherited_and_rule_overridable(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2237,7 +2277,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         "quarterly_cost": 112.5,
         "requests_per_turn": 1.0,
         "route_breakdown": {"openai/model [metered]": {
-            "actual_cost": 1.25, "api_equivalent_estimate": None, "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
+            "cost": 1.25, "cost_status_counts": {"recorded": 1}, "entries": 1, "observed_providers": ["openai"], "model_requests": 1,
             "model_tool_calls": 0, "model_turns": 1, "tokens": 100,
         }},
         "scope_warnings": [],
@@ -2349,8 +2389,14 @@ class Act3Phase1BaselineTests(unittest.TestCase):
             "start": "2026-08-01", "end": "2026-08-01",
             "label": "2026-08-01 to 2026-08-01",
         })
+        def legacy(value):
+            if isinstance(value, dict):
+                return {key: legacy(item) for key, item in value.items() if key not in {"actual_cost", "api_equivalent_estimate", "estimate_status_counts"}}
+            if isinstance(value, list):
+                return [legacy(item) for item in value]
+            return value
         self.assertEqual(
-            {key: report["agent_stats"]["pi"][key] for key in self.EXPECTED_PI_STATS},
+            legacy({key: report["agent_stats"]["pi"][key] for key in self.EXPECTED_PI_STATS}),
             self.EXPECTED_PI_STATS,
         )
 

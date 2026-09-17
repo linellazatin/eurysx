@@ -121,12 +121,12 @@ def _print_grouped_section(title: str, breakdown: Dict, attribution_noun: str):
         return
     rows = sorted(breakdown.items(), key=lambda item: item[1]['cost'], reverse=True)
     _print_table(
-        (attribution_noun.title(), "Tokens", "Known cost", "Cost status", "Requests", "Turns", "Tool calls"),
+        (attribution_noun.title(), "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status", "Requests", "Turns", "Tool calls"),
         [
             (
                 key,
                 f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
-                _cost_display(data), _cost_status(data),
+                _cost_display(data), _lane_display(data, "actual_cost"), _lane_display(data, "api_equivalent_estimate"), _cost_status(data),
                 f"{data['model_requests']:,}", f"{data['model_turns']:,}", f"{data['model_tool_calls']:,}",
             )
             for key, data in rows
@@ -179,8 +179,8 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"),
         ("GRAND TOTAL TOKENS", f"{stats.total_tokens:,}"),
         ("KNOWN COST", f"${stats.known_cost:,.6f}"),
-        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.actual_cost else "N/A"),
-        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.api_equivalent_estimate else "N/A"),
+        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.cost_status_counts.get("recorded") else "N/A"),
+        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.estimate_status_counts.get("estimated") else "N/A"),
     ))
     
     # ===== BREAKDOWN BY MODEL SECTION =====
@@ -195,13 +195,14 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     )
     
     _print_table(
-        ("Model", "Tokens", "Known cost", "Cost status", "Requests", "Turns", "Tool calls"),
+        ("Model", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status", "Requests", "Turns", "Tool calls"),
         [
             (
                 model_id,
                 f"{model_data['input'] + model_data['output'] + model_data['cache_read'] + model_data['cache_write']:,}",
-                _cost_display(model_data), _cost_status(model_data),
-                f"{model_data['model_requests']:,}", f"{model_data['model_turns']:,}",
+                _cost_display(model_data), _lane_display(model_data, "actual_cost"), _lane_display(model_data, "api_equivalent_estimate"), _cost_status(model_data),
+                f"{model_data['model_requests']:,}",
+ f"{model_data['model_turns']:,}",
                 f"{model_data['model_tool_calls']:,}",
             )
             for model_id, model_data in sorted_models
@@ -343,8 +344,8 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
     coverage = f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"
     cost_rows = [
         ("Legacy known cost", f"${actual_cost:,.6f}"),
-        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.actual_cost else "N/A"),
-        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.api_equivalent_estimate else "N/A"),
+        ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.cost_status_counts.get("recorded") else "N/A"),
+        ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.estimate_status_counts.get("estimated") else "N/A"),
         ("Unknown-cost entries", f"{stats.unknown_cost_count:,}"),
         ("Unknown metered-cost tokens", f"{stats.unknown_cost_tokens:,}"),
         ("Metered token coverage", coverage),
@@ -373,10 +374,10 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         provider, model = provider_model.split("/", 1)
         route_rows.append((
             provider, ", ".join(route_data.get("observed_providers", [])), model, mode[:-1], f"{route_data['tokens']:,}",
-            _cost_display(route_data), _cost_status(route_data), f"{route_data['entries']:,}",
+            _cost_display(route_data), _lane_display(route_data, "actual_cost"), _lane_display(route_data, "api_equivalent_estimate"), _cost_status(route_data), f"{route_data['entries']:,}",
         ))
     _print_table(
-        ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Cost status", "Entries"),
+        ("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status", "Entries"),
         route_rows,
     )
     source_paths = {
@@ -562,7 +563,7 @@ def build_markdown_report(report: AnalysisReport) -> str:
     for index, leader in enumerate(leaders["combined"], 1):
         lines.append(f"| {index} | {leader['provider']} | {leader['model']} | {leader['tokens']:,} |")
     for agent, stats in sorted(report.agent_stats.items()):
-        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Legacy known cost: ${stats.known_cost:.6f}", f"Actual recorded cost: ${stats.actual_cost:.6f}" if stats.actual_cost else "Actual recorded cost: N/A", f"API-equivalent estimate: ${stats.api_equivalent_estimate:.6f}" if stats.api_equivalent_estimate else "API-equivalent estimate: N/A", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Actual recorded | API-equivalent estimate | Cost status |", "| --- | --- | --- | --- | ---: | ---: | ---: | --- |"]
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Legacy known cost: ${stats.known_cost:.6f}", f"Actual recorded cost: ${stats.actual_cost:.6f}" if stats.cost_status_counts.get("recorded") else "Actual recorded cost: N/A", f"API-equivalent estimate: ${stats.api_equivalent_estimate:.6f}" if stats.estimate_status_counts.get("estimated") else "API-equivalent estimate: N/A", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Actual recorded | API-equivalent estimate | Cost status |", "| --- | --- | --- | --- | ---: | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
@@ -657,7 +658,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
     for agent, stats in agents:
         display = report.agent_displays.get(agent)
         period = f"{display.start_date} to {display.end_date} ({display.label})" if display else report.period_label
-        total = table(("Metric", "Value"), (("Model requests", f"{stats.total_model_requests:,}"), ("Model turns", f"{stats.total_model_turns:,}"), ("Model tool calls", f"{stats.total_model_tool_calls:,}"), ("Input tokens", f"{stats.total_input_tokens:,}"), ("Output tokens", f"{stats.total_output_tokens:,}"), ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"), ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"), ("Grand total tokens", f"{stats.total_tokens:,}"), ("Known cost", cost(stats, stats.known_cost)), ("Actual recorded cost", _lane_display({"value": stats.actual_cost} if stats.actual_cost else {}, "value")), ("API-equivalent estimate", _lane_display({"value": stats.api_equivalent_estimate} if stats.api_equivalent_estimate else {}, "value")), ("Cost context", cost_context(stats))))
+        total = table(("Metric", "Value"), (("Model requests", f"{stats.total_model_requests:,}"), ("Model turns", f"{stats.total_model_turns:,}"), ("Model tool calls", f"{stats.total_model_tool_calls:,}"), ("Input tokens", f"{stats.total_input_tokens:,}"), ("Output tokens", f"{stats.total_output_tokens:,}"), ("Cache read tokens", f"{stats.total_cache_read_tokens:,}"), ("Cache creation tokens", f"{stats.total_cache_write_tokens:,}"), ("Grand total tokens", f"{stats.total_tokens:,}"), ("Known cost", cost(stats, stats.known_cost)), ("Actual recorded cost", f"${stats.actual_cost:,.6f}" if stats.cost_status_counts.get("recorded") else "N/A"), ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.estimate_status_counts.get("estimated") else "N/A"), ("Cost context", cost_context(stats))))
         sections = [f"<h1>{text(AGENT_NAMES.get(agent, agent))}</h1><p>Analysis period: {text(period)}</p>", section("TOTAL USAGE", total, open=True)]
         for warning in stats.scope_warnings:
             sections.append(f"<p>Warning: {text(warning)}</p>")
@@ -672,9 +673,9 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         ))
         for title, label, data, noun in (("BREAKDOWN BY MODEL", "Model", stats.model_breakdown, "models"), ("BREAKDOWN BY PROJECT", "Project", stats.project_breakdown, "projects"), ("BREAKDOWN BY SESSION", "Session", stats.session_breakdown, "sessions")):
             count = len(data)
-            sections.append(section(title, table((label, "Tokens", "Known cost", "Cost status"), [(key, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _cost_status(item)) for key, item in sorted(data.items())], sortable=True), meta=f"{count} {noun[:-1] if count == 1 else noun}"))
+            sections.append(section(title, table((label, "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(key, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for key, item in sorted(data.items())], sortable=True), meta=f"{count} {noun[:-1] if count == 1 else noun}"))
         days = len(stats.daily_activity)
-        sections.append(section("DAILY ACTIVITY", table(("Date", "Tokens", "Known cost", "Cost status"), [(day, f"{item['tokens']:,}", _cost_display(item), _cost_status(item)) for day, item in sorted(stats.daily_activity.items())], sortable=True), meta=f"{days} {'day' if days == 1 else 'days'}"))
+        sections.append(section("DAILY ACTIVITY", table(("Date", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(day, f"{item['tokens']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for day, item in sorted(stats.daily_activity.items())], sortable=True), meta=f"{days} {'day' if days == 1 else 'days'}"))
         sections.append(section("SUMMARY STATISTICS", table(("Metric", "Value"), (("Sessions", stats.sessions_count), ("Usage entries", stats.usage_entries), ("Unique models", len(stats.unique_models)), ("Cache read ratio", f"{stats.cache_read_ratio:.1%}" if stats.cache_read_ratio is not None else "N/A"), ("Cache efficiency ratio", f"{stats.cache_efficiency_ratio:.1f}:1" if stats.cache_efficiency_ratio is not None else "N/A"), ("Requests per turn", f"{stats.requests_per_turn:.2f}" if stats.requests_per_turn is not None else "N/A"), ("Tool calls per request", f"{stats.tool_calls_per_request:.2f}" if stats.tool_calls_per_request is not None else "N/A"), ("Tool calls per turn", f"{stats.tool_calls_per_turn:.2f}" if stats.tool_calls_per_turn is not None else "N/A")))))
         sections.append(section("PRICING PROVENANCE", table(("Provider", "Observed via", "Model", "Billing mode", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(provider_model.split("/", 1)[0], ", ".join(item.get("observed_providers", [])), provider_model.split("/", 1)[1], mode[:-1], f"{item['tokens']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for route, item in sorted(stats.route_breakdown.items()) for provider_model, mode in [route.rsplit(" [", 1)]], sortable=True) + table(("Pricing source", "Kind", "Fetched at"), [(source, stats.pricing_source_kinds.get(source, "unknown"), stats.pricing_fetched_at.get(source, "N/A")) for source in sorted(stats.pricing_sources) or ["No resolved source"]])))
         if stats.unresolved_routes:
