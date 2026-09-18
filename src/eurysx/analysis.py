@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from .models import AgentDisplay, AgentStats, UsageEntry
+from .models import AggregateImportSummary, AgentDisplay, AgentStats, UsageEntry
 
 
 def _comparison_fields(stats: AgentStats) -> Dict[str, Any]:
@@ -343,3 +343,90 @@ class UsageAnalyzer:
             "current": _comparison_fields(current),
             "previous": _comparison_fields(previous),
         }
+
+    IMPORT_TOKEN_FIELDS = ("input_uncached_tokens", "input_cached_tokens",
+                           "cache_creation_tokens", "output_tokens")
+    IMPORT_STALE_DAYS = 3
+
+    @staticmethod
+    def summarize_imports(rows: List[Dict[str, Any]], *, aggregates_present: bool,
+                          today: date, active_filters=()) -> AggregateImportSummary:
+        """Roll up stored provider aggregates without reading a single local stat.
+
+        Reported cost and token dimensions stay separate lanes: a usage row has no cost
+        and a cost row has no tokens, so neither can be mistaken for the other. Warnings
+        are returned, not printed, so presenters and stderr stay separated.
+        """
+        by_date: Dict[str, Dict[str, Any]] = {}
+        by_model: Dict[str, Dict[str, Any]] = {}
+        sources: Dict[str, Dict[str, Any]] = {}
+        warnings: List[str] = []
+        totals = UsageAnalyzer._empty_import_bucket()
+        totals["rows_with_reported_cost"] = 0
+        for row in rows:
+            cost = None if row["cost_usd"] is None else float(row["cost_usd"])
+            for bucket, key in ((by_date, row["date"]), (by_model, row["model"] or "unknown")):
+                item = bucket.setdefault(key, UsageAnalyzer._empty_import_bucket())
+                UsageAnalyzer._add_import_row(item, row, cost)
+            UsageAnalyzer._add_import_row(totals, row, cost)
+            source = sources.setdefault(row["source_file"], {
+                "scope": row["scope_label"], "kind": row["source_kind"], "rows": 0,
+                "source_mtime": row["source_mtime"], "ingested_at": row["ingested_at"],
+                "newest_complete_date": None,
+            })
+            source["rows"] += 1
+            if row["complete"] and (source["newest_complete_date"] or "") < row["date"]:
+                source["newest_complete_date"] = row["date"]
+        if any(not row["complete"] for row in rows):
+            warnings.append(
+                "Warning: newest imported bucket is still in progress; Anthropic data for "
+                "today is partial.")
+        if rows and aggregates_present:
+            warnings.append(
+                "Warning: imported aggregates overlap local claude-code aggregate usage; "
+                "both lanes are reported separately because an organization aggregate has "
+                "no stable join key to local stats.")
+        limit = (today - timedelta(days=UsageAnalyzer.IMPORT_STALE_DAYS)).isoformat()
+        for path, source in sorted(sources.items()):
+            newest = source["newest_complete_date"]
+            if newest is not None and newest < limit:
+                warnings.append(
+                    f"Warning: aggregate import for {source['scope']} is stale; newest "
+                    f"complete bucket is {newest} from {path}.")
+        spans = {}
+        for row in rows:
+            dates = spans.setdefault(row["scope_label"], [])
+            dates.append(row["date"])
+        ranges = {scope: (min(dates), max(dates)) for scope, dates in spans.items()}
+        scopes = sorted(ranges)
+        for index, first in enumerate(scopes):
+            for second in scopes[index + 1:]:
+                if ranges[first][0] <= ranges[second][1] and \
+                        ranges[second][0] <= ranges[first][1]:
+                    warnings.append(
+                        f"Warning: imported aggregate sources overlap each other "
+                        f"({first}, {second}); shared days may double-count.")
+        return AggregateImportSummary(
+            rows=list(rows), by_date=by_date, by_model=by_model, totals=totals,
+            sources=sources, warnings=warnings, filtered_by=list(active_filters))
+
+    @staticmethod
+    def _empty_import_bucket() -> Dict[str, Any]:
+        bucket = {"rows": 0, "reported_cost_usd": None, "incomplete_rows": 0}
+        for field_name in UsageAnalyzer.IMPORT_TOKEN_FIELDS:
+            bucket[field_name] = 0
+        return bucket
+
+    @staticmethod
+    def _add_import_row(item: Dict[str, Any], row: Dict[str, Any], cost: Optional[float]):
+        item["rows"] += 1
+        if not row["complete"]:
+            item["incomplete_rows"] += 1
+        for field_name in UsageAnalyzer.IMPORT_TOKEN_FIELDS:
+            if row[field_name] is not None:
+                item[field_name] += row[field_name]
+        if cost is None:
+            return
+        item["reported_cost_usd"] = (item["reported_cost_usd"] or 0) + cost
+        if "rows_with_reported_cost" in item:
+            item["rows_with_reported_cost"] += 1

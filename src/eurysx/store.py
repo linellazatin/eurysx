@@ -7,7 +7,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# 0 is a fresh store, 1 is the released schema (upgraded in place by creating the
+# aggregate import table; no data moves). Anything else is a store this build cannot read.
+SUPPORTED_SCHEMA_VERSIONS = (0, 1, 2)
+# Pseudo-agent key for imported provider aggregates. It is never a harness, so the
+# four --agent choices, detect_agents(), and PARSER_VERSIONS stay unchanged.
+AGENT_AGGREGATE_IMPORTS = "anthropic-aggregate"
 
 
 def _decimal_text(value):
@@ -47,7 +53,7 @@ class UsageStore:
     def _initialize(self):
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, SCHEMA_VERSION):
+            if version not in SUPPORTED_SCHEMA_VERSIONS:
                 raise RuntimeError(
                     f"unsupported Eurysx store schema version: {version}"
                 )
@@ -88,6 +94,38 @@ class UsageStore:
                 CREATE INDEX IF NOT EXISTS events_model_id ON events(model_id);
                 CREATE INDEX IF NOT EXISTS events_project_id ON events(project_id);
                 CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id);
+                CREATE TABLE IF NOT EXISTS aggregate_imports (
+                    source_key TEXT NOT NULL REFERENCES sources(source_key) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL,
+                    scope_label TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    model TEXT,
+                    date TEXT NOT NULL,
+                    bucket_end TEXT,
+                    input_uncached_tokens INTEGER,
+                    input_cached_tokens INTEGER,
+                    cache_creation_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cost_usd TEXT,
+                    cost_type TEXT,
+                    workspace_id TEXT,
+                    service_tier TEXT,
+                    context_window TEXT,
+                    inference_geo TEXT,
+                    speed TEXT,
+                    complete INTEGER NOT NULL,
+                    source_file TEXT NOT NULL,
+                    source_mtime TEXT,
+                    ingested_at TEXT NOT NULL,
+                    parser_version TEXT,
+                    PRIMARY KEY (source_key, ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS aggregate_imports_date
+                    ON aggregate_imports(date);
+                CREATE INDEX IF NOT EXISTS aggregate_imports_model
+                    ON aggregate_imports(model);
+                CREATE INDEX IF NOT EXISTS aggregate_imports_source
+                    ON aggregate_imports(source_key, date);
             """)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             # Idempotent purge of Phase 2 per-agent bulk rows (source_key 'collector:<agent>').
@@ -151,6 +189,76 @@ class UsageStore:
                 (source.key, agent, source.fingerprint, source.parser_version,
                  datetime.now(timezone.utc).isoformat(), str(error)),
             )
+
+    def replace_import_source(self, source_key, fingerprint, rows, parser_version="1"):
+        """Atomically replace one declared import entry's aggregate rows.
+
+        Imported rows live in their own table on purpose: events(), has_aggregate_events(),
+        and distinct_agents() read the `events` table only, so an import cannot reach
+        pricing, attribution, or any local cost lane even if a filter is forgotten.
+        """
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """INSERT INTO sources
+                   (source_key, agent, fingerprint, parser_version, collected_at, last_error)
+                   VALUES (?, ?, ?, ?, ?, NULL)
+                   ON CONFLICT(source_key) DO UPDATE SET
+                       agent=excluded.agent, fingerprint=excluded.fingerprint,
+                       parser_version=excluded.parser_version,
+                       collected_at=excluded.collected_at, last_error=NULL""",
+                (source_key, AGENT_AGGREGATE_IMPORTS, fingerprint, parser_version,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            connection.execute("DELETE FROM aggregate_imports WHERE source_key = ?",
+                               (source_key,))
+            connection.executemany(
+                """INSERT INTO aggregate_imports
+                   (source_key, ordinal, scope_label, source_kind, model, date, bucket_end,
+                    input_uncached_tokens, input_cached_tokens, cache_creation_tokens,
+                    output_tokens, cost_usd, cost_type, workspace_id, service_tier,
+                    context_window, inference_geo, speed, complete, source_file,
+                    source_mtime, ingested_at, parser_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (source_key, ordinal, row.scope_label, row.source_kind, row.model,
+                     row.date, row.bucket_end, row.input_uncached_tokens,
+                     row.input_cached_tokens, row.cache_creation_tokens, row.output_tokens,
+                     _decimal_text(row.cost_usd) if row.cost_usd is not None else None,
+                     row.cost_type, row.workspace_id, row.service_tier, row.context_window,
+                     row.inference_geo, row.speed, int(row.complete), row.source_file,
+                     row.source_mtime, row.ingested_at, row.parser_version)
+                    for ordinal, row in enumerate(rows)
+                ],
+            )
+
+    def import_source_states(self):
+        """Persisted state for declared import sources only."""
+        return self.source_states([AGENT_AGGREGATE_IMPORTS])
+
+    def imported_aggregates(self, start_date=None, end_date=None, models=None):
+        """Stored aggregate rows; no join to events, by construction.
+
+        A model filter keeps ungrouped rows (model IS NULL) visible, mirroring the
+        Phase 3C unknown bucket rather than hiding reported cost.
+        """
+        conditions, parameters = [], []
+        if start_date is not None:
+            conditions.append("date >= ?")
+            parameters.append(start_date.isoformat())
+        if end_date is not None:
+            conditions.append("date <= ?")
+            parameters.append(end_date.isoformat())
+        if models:
+            conditions.append("(model IN (" + ", ".join("?" for _ in models) + ")"
+                              " OR model IS NULL)")
+            parameters.extend(models)
+        query = "SELECT * FROM aggregate_imports"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY date, source_kind, model, cost_type"
+        with self._connection() as connection:
+            return [dict(row) for row in connection.execute(query, parameters)]
 
     def source_states(self, agents=None):
         """Full persisted source state, optionally limited to agents."""
