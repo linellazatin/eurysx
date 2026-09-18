@@ -2,8 +2,6 @@
 
 ## [0.1.5] - Anthropic aggregate-cost imports
 
-Date: 2026-09-18
-
 ### Added
 
 - Sanitized Anthropic Usage & Cost report fixtures pinning the aggregate import contract (provisional, documentation-derived until a live response is verified).
