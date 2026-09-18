@@ -227,6 +227,8 @@ Non-goal: automatically reading Anthropic credentials or allocating one organiza
 
 - [x] Fixed while verifying live: `report` skipped the aggregate lane whenever the local selection held no harness rows, and HTML export crashed on a store with no token leader. An imports-only store now renders the lane in every format.
 - [x] Fixed while verifying live: `collect` stopped at `No agents detected.` on a machine with no harness history, so declared imports were never ingested. Imports now refresh regardless of harness presence.
+- [x] Fixed while scripting the live checks: `aggregate import entry ignored: ...` was registered after the preference warning flush, so invalid import entries were dropped silently.
+- [x] Live checks are scripted: `tests/live_test.py` runs L1-L17 as a real CLI process in a sandboxed config, cache, data, and home, and reports machine-readable results (`--json`, exit `0`/`1`/`2`).
 - Not defects, recorded so they are not re-filed: `--format` is never inferred from the `--output` filename, and a `preferences.jsonc` without an `agents` object is rejected with `preferences ignored: agents must be an object` while `aggregate_imports` still loads. Both predate Phase 11; the shipped sample always writes `agents`.
   - [ ] Decide later whether `--output` should infer `--format` from the extension (today `--output report.csv` without `--format csv` silently writes JSON and exits 0).
   - [ ] Decide later whether a preferences file missing `agents` should keep discarding the whole file, now that the same file can carry an `aggregate_imports` block.

@@ -22,6 +22,7 @@ Date: 2026-09-18
 
 - `report` no longer hides the provider-reported lane when the local selection holds no harness rows: an imports-only store prints `No local harness usage stored; reporting provider-reported aggregates only.` and renders the lane in every format, and HTML export no longer assumes a token leader exists.
 - `collect` ingests declared aggregate imports on a machine with no detected harness history instead of stopping at `No agents detected.`
+- Invalid `aggregate_imports` entries are now reported. The block was validated after preference warnings had already been flushed, so `aggregate import entry ignored: ...` never reached stderr and a mistyped entry looked accepted.
 
 ### Tests
 
@@ -30,6 +31,7 @@ Date: 2026-09-18
 - Store migration, atomic replacement, incremental skip, last-good retention, configuration validation, doctor state, and all five presenters.
 - Boundary and privacy guards: the reader package imports neither pricing, storage, nor presentation; imported rows are never usage entries; fixtures carry no identifiers or content fields.
 - Imports-only paths: the lane renders with no local agent stats in terminal, JSON, CSV, Markdown, and HTML, and `collect` ingests declared imports when no harness is detected.
+- `tests/live_test.py`: scripted live checks L1-L17 driving a real CLI process inside sandboxed `EURYSX_CONFIG_DIR`, `EURYSX_DATA_DIR`, `EURYSX_CACHE_DIR`, and `HOME`, with `--json`, `--only`, and `--old-tree` for agent invocation and cross-version comparison.
 
 ## [0.1.4] - Cost lanes and LiteLLM estimates
 

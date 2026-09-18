@@ -10,14 +10,15 @@ Privacy invariants: never persist or output prompts, responses, file contents, t
 
 ```bash
 PYTHONPATH=src python3 -m unittest -v tests/test_eurysx.py
-python3 -m py_compile src/eurysx/*.py
+python3 tests/live_test.py --json
+python3 -m py_compile src/eurysx/*.py src/eurysx/collectors/*.py src/eurysx/imports/*.py
 python3 -m pip install .
 eurysx --refresh-pricing
 eurysx collect --agent codex
 eurysx report --agent codex --days 30 --model x --provider y --billing-mode metered
 ```
 
-There is no build step beyond installation, and no lint or typecheck configuration. Capture stderr in CLI tests so warnings do not contaminate assertions.
+There is no build step beyond installation, and no lint or typecheck configuration. Capture stderr in CLI tests so warnings do not contaminate assertions. `tests/live_test.py` drives a real CLI process inside a sandboxed `EURYSX_CONFIG_DIR`/`EURYSX_DATA_DIR`/`EURYSX_CACHE_DIR`/`HOME`, exits non-zero on any failure, and is documented under `docs/manual.md` -> Running the tests.
 
 ## Architecture
 
@@ -45,6 +46,8 @@ Parser changes must bump the matching collector version: Claude Code 1, Codex 2,
 
 Run these against the installed CLI (`eurysx`, not `PYTHONPATH=src`) after any change to `imports/`, `store.py`, `cli.py`, or the presenters. Always point `EURYSX_CONFIG_DIR` and `EURYSX_DATA_DIR` at throwaway directories: the store is migrated in place on first write and there is no down-migration, and the repository's own `config/` and `data/` must not absorb test rows.
 
+L1-L16 are automated in `tests/live_test.py` under the same ids, plus L17. The script pins `HOME` to an empty directory, so its L1 equivalent uses `report` instead of the bare analyze command, and L17 needs `--old-tree` pointing at the previous release's checkout. Run the table by hand when a check needs real harness history, a browser, or judgement about the numbers.
+
 | ID | Condition | Command | Check |
 | --- | --- | --- | --- |
 | L1 | real store, no imports declared | `eurysx --agent all --days 30` | exits 0; no `PROVIDER-REPORTED AGGREGATES` block; the only "aggregate" text is the pre-existing Claude Code period-exclusion warning |
@@ -63,12 +66,14 @@ Run these against the installed CLI (`eurysx`, not `PYTHONPATH=src`) after any c
 | L14 | CLI contract | `--to` without `--from`, `--format` without `--output`, an unknown flag | exit `2` for all three; exit `0` for normal reports; an unknown `--output` extension silently writes JSON |
 | L15 | store holds imported rows and no local events | `eurysx report --days 30`, then the same with `--format html` | renders `No local harness usage stored; reporting provider-reported aggregates only.` plus the lane, writes `index.html` with no per-agent page, and exits 0 (HTML must not assume a token leader exists) |
 | L16 | no harness history on the machine, imports declared | `eurysx collect` | prints `No local harnesses detected; refreshing declared aggregate imports only.` and ingests the declared reports instead of stopping at `No agents detected.` |
+| L17 | a second checkout of the previous release | `python3 tests/live_test.py --old-tree <path>` | every JSON key except `schema_version` and `aggregate_imports` is byte-identical between the two versions on the same store copy |
 
 Two behaviors are intentional, not defects, and predate the aggregate lane: `--format` is never inferred from the `--output` filename, and a `preferences.jsonc` without an `agents` object is ignored with a warning.
 
 ## Key files
 
 - `tests/test_eurysx.py`: single unittest suite and CLI/output baselines.
+- `tests/live_test.py`: scripted live checks L1-L17 against a real CLI process in a sandbox.
 - `tests/fixtures/`: sanitized source-shape fixtures, including SQL for a temporary OpenCode database.
 - `docs/manual.md`: authoritative operational documentation; `README.md` is the concise overview and `docs/cli.md`/`docs/output.md` redirect to the manual.
 - `ROADMAP.md`: phase status and planned work.

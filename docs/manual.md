@@ -371,6 +371,65 @@ re-parses report files, and it never deletes stored rows or import sources.
 
 Diagnostics go to stderr. JSON exports retain resolver and preference warnings in their provenance objects.
 
+## Running the tests
+
+Two suites with different jobs:
+
+| Suite | Command | Covers | Needs |
+| --- | --- | --- | --- |
+| Unit | `PYTHONPATH=src python3 -m unittest -v tests/test_eurysx.py` | parsers, store migration, pricing, analysis, every presenter, and CLI wiring against temporary directories and fixtures | Python 3.11+, no network |
+| Live | `python3 tests/live_test.py` | a real CLI process: exit codes, stderr warnings, exported artifacts, and SQLite state | a checkout, optionally an installed `eurysx` |
+
+Syntax gate for both: `python -m py_compile src/eurysx/*.py src/eurysx/collectors/*.py
+src/eurysx/imports/*.py`. There is no linter or type checker configured in this repository.
+CI runs the unit suite, then `python tests/live_test.py` against the installed console script
+after `pip install .`, so the packaged build is exercised as well as the checkout.
+
+### Live script
+
+`tests/live_test.py` automates the L1-L16 checklist under *Live smoke tests* in `AGENTS.md`,
+plus L17, the cross-version byte comparison. It never writes to your own `config/`, `cache/`,
+or `data/`: each run points `EURYSX_CONFIG_DIR`, `EURYSX_DATA_DIR`, `EURYSX_CACHE_DIR`, and
+`HOME` into a throwaway sandbox and enables no pricing source, so no request leaves the machine.
+
+```bash
+python3 tests/live_test.py                              # installed eurysx, else this checkout
+python3 tests/live_test.py --list                       # check inventory as JSON
+python3 tests/live_test.py --json                       # machine-readable results
+python3 tests/live_test.py --only L5,L15                # subset
+python3 tests/live_test.py --eurysx "python3 -m eurysx.cli"   # the checkout, not the install
+python3 tests/live_test.py --old-tree /path/to/0.1.4     # unlocks L17
+python3 tests/live_test.py --keep-dir /tmp/live          # inspect the sandbox afterwards
+python3 tests/live_test.py --store ""                    # skip the three store-backed checks
+python3 tests/live_test.py --seed-pricing                # copy this checkout's pricing config
+```
+
+Exit status is `0` when every check passes, `1` when any fails, `2` on a bad invocation. A
+`SKIP` names a precondition this machine cannot supply and never counts as a failure. Reports
+are re-dated relative to today before ingestion, so the staleness and freshness checks do not
+depend on the age of the committed fixtures.
+
+L1, L13, and L17 copy your real `data/eurysx.db` into the sandbox and read only the copy: they
+prove the aggregate lane leaves local output untouched on genuine data, and they skip when no
+store exists yet. Because the sandbox `HOME` holds no harness history, L1 exercises `report`
+rather than the bare analyze command; run the checklist by hand once against a real machine for
+that path. Testing the installed build rather than the checkout is deliberate: a stale install
+fails the check that the working tree already fixed.
+
+### What a script cannot cover
+
+| Task | Why it needs a human or agent |
+| --- | --- |
+| Verify Anthropic report shapes against a live saved response | Saving the file requires organization API access, and deciding whether an unexpected key set is a schema change or merely an ungrouped dimension takes judgement. Scriptable only once a file exists, and the change is to `REPORT_KEYS`/`COST_KEYS` plus the fixtures. |
+| Read a rendered report | HTML layout, sortable tables, and whether a disclosure actually warns a reader are visual judgements. |
+| Triage a failure | The script prints the failing assertion; deciding whether behaviour regressed or the check is wrong means reading the code. |
+| Judge whether the numbers are plausible | Comparing imported totals against a provider console, or accepting a coverage drop, is not mechanically decidable. |
+| Cross-version comparison | L17 needs the previous release's source tree, which an agent has to produce with `git worktree add` or `git archive`. |
+| Collection from real harness history | The sandbox pins `HOME` precisely so the script never touches your sessions; a full-machine collect is an intentional manual run. |
+
+Everything that is a regression path for the aggregate lane is scripted. What is left is
+judgement and machine access, not repetition.
+
 ## Adding a collector
 
 1. Add a fixed harness path and collector module that enumerates `Source` descriptors.
