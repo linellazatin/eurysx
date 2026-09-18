@@ -24,7 +24,8 @@ jobs:
           test "$GITHUB_REF_NAME" = "v$version"
       - run: python -m pip install .
       - run: PYTHONPATH=src python -m unittest -v tests/test_eurysx.py
-      - run: python -m py_compile src/eurysx/*.py src/eurysx/collectors/*.py
+      - run: python tests/live_test.py
+      - run: python -m py_compile src/eurysx/*.py src/eurysx/collectors/*.py src/eurysx/imports/*.py
       - run: git diff --check
       - name: Build and validate distributions
         run: |
