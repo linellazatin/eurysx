@@ -489,6 +489,110 @@ def print_summary_comparison(report: AnalysisReport):
     )
 
 
+IMPORT_TOKEN_FIELDS = ("input_uncached_tokens", "input_cached_tokens",
+                      "cache_creation_tokens", "output_tokens")
+
+
+def _lane_tokens(bucket: Dict) -> str:
+    """Token total for one aggregate bucket; a cost-only bucket totals zero tokens."""
+    return f"{sum(bucket.get(name) or 0 for name in IMPORT_TOKEN_FIELDS):,}"
+
+
+def _lane_usd(value) -> str:
+    return "N/A" if value is None else f"${value:,.2f}"
+
+
+def print_aggregate_imports(report: AnalysisReport):
+    """Print the provider-reported aggregate lane; never part of an agent block.
+
+    Nothing here reads agent stats: this lane is reported beside the local figures, and
+    never summed into them.
+    """
+    summary = report.aggregate_imports
+    if not summary or not summary.rows:
+        return
+    print(f"\n{'=' * 80}")
+    print("PROVIDER-REPORTED AGGREGATES")
+    print("=" * 80)
+    _print_metrics([
+        ("Scope", ", ".join(sorted({source["scope"] for source in summary.sources.values()}))),
+        ("Imported buckets", f"{summary.totals['rows']:,}"),
+        *((name.replace("_", " ").title(), f"{summary.totals[name]:,}")
+          for name in IMPORT_TOKEN_FIELDS),
+        ("Reported cost (USD)", _lane_usd(summary.totals["reported_cost_usd"])),
+    ])
+    print("\nProvider-reported aggregates are organization-level, not an invoice, exclude")
+    print("cloud provider routes (Amazon Bedrock, Google Vertex, Microsoft Foundry), and are")
+    print("never allocated to local sessions or projects.")
+    for name in summary.filtered_by:
+        print(f"Note: --{name} filters local usage only; this lane is unfiltered.")
+    print("\nREPORTED BY DAY")
+    _print_table(
+        ("Date", "Buckets", "Tokens", "Reported USD", "Status"),
+        [(day, item["rows"], _lane_tokens(item), _lane_usd(item["reported_cost_usd"]),
+          "partial" if item["incomplete_rows"] else "complete")
+         for day, item in sorted(summary.by_date.items())],
+    )
+    print("\nREPORTED BY MODEL")
+    _print_table(
+        ("Model", "Buckets", "Tokens", "Reported USD"),
+        [(model, item["rows"], _lane_tokens(item), _lane_usd(item["reported_cost_usd"]))
+         for model, item in sorted(summary.by_model.items())],
+    )
+    print("\nIMPORT SOURCES")
+    _print_table(
+        ("Scope", "Kind", "Buckets", "Newest complete", "Source mtime"),
+        [(source["scope"], source["kind"], source["rows"],
+          source["newest_complete_date"] or "n/a", source["source_mtime"] or "n/a")
+         for source in summary.sources.values()],
+    )
+
+
+def _html_aggregate_imports(report: AnalysisReport, section, table) -> str:
+    """Index-only aggregate section; agent pages show local harness usage."""
+    lane = report.aggregate_imports
+    if not lane or not lane.rows:
+        return ""
+    by_date = table(("Date", "Buckets", "Tokens", "Reported USD", "Status"),
+                    [(day, item["rows"], _lane_tokens(item), _lane_usd(item["reported_cost_usd"]),
+                      "partial" if item["incomplete_rows"] else "complete")
+                     for day, item in sorted(lane.by_date.items())], sortable=True)
+    by_model = table(("Model", "Buckets", "Tokens", "Reported USD"),
+                     [(model, item["rows"], _lane_tokens(item),
+                       _lane_usd(item["reported_cost_usd"]))
+                      for model, item in sorted(lane.by_model.items())], sortable=True)
+    sources = table(("Scope", "Kind", "Buckets", "Newest complete", "Source mtime"),
+                    [(source["scope"], source["kind"], source["rows"],
+                      source["newest_complete_date"] or "n/a", source["source_mtime"] or "n/a")
+                     for source in sorted(lane.sources.values(),
+                                          key=lambda item: item["scope"])])
+    body = (f"<p>Reported cost: {_lane_usd(lane.totals['reported_cost_usd'])} across "
+            f"{lane.totals['rows']:,} imported buckets. Provider-reported aggregates are "
+            "organization-level, not an invoice, exclude cloud provider routes, and are "
+            "never allocated to local sessions or projects.</p>"
+            + "<h3>REPORTED BY DAY</h3>" + by_date
+            + "<h3>REPORTED BY MODEL</h3>" + by_model
+            + "<h3>IMPORT SOURCES</h3>" + sources)
+    return section("Provider-Reported Aggregates", body, meta=f"{len(lane.rows)} buckets")
+
+
+def _aggregate_import_dict(summary) -> Dict:
+    """Stable JSON shape: an unconfigured report still emits an explicit empty lane."""
+    totals = dict(summary.totals) if summary else {}
+    totals.setdefault("rows", 0)
+    totals.setdefault("reported_cost_usd", None)
+    return {
+        "provenance": "provider_reported_aggregate",
+        "totals": totals,
+        "by_date": summary.by_date if summary else {},
+        "by_model": summary.by_model if summary else {},
+        "sources": summary.sources if summary else {},
+        "warnings": summary.warnings if summary else [],
+        "filters_not_applied": summary.filtered_by if summary else [],
+        "rows": summary.rows if summary else [],
+    }
+
+
 def _agent_stats_dict(stats: AgentStats) -> Dict:
     """Serializable per-agent stats block for the JSON report."""
     return {
@@ -543,14 +647,21 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
 def build_csv_report(report: AnalysisReport) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "actual_recorded_cost_usd", "api_equivalent_estimate_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status"))
+    writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "actual_recorded_cost_usd", "api_equivalent_estimate_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status", "reported_cost_usd"))
     for agent, stats in sorted(report.agent_stats.items()):
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
             status = _cost_status(data)
             cost = data["cost"] if status in ("known", "partial") else "N/A"
-            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status))
+            writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status, ""))
+    # One flat row per imported aggregate bucket: `agent` carries the lane marker and
+    # `reported_cost_usd` carries provider-reported USD, so the two never share a column.
+    for row in report.aggregate_imports.rows:
+        tokens = sum(row.get(name) or 0 for name in IMPORT_TOKEN_FIELDS)
+        writer.writerow(("reported_aggregate", row["scope_label"], row["source_kind"],
+                         row["model"] or "unknown", "aggregate", tokens, "N/A", "N/A", "N/A",
+                         1, 0, 0, 0, "reported_aggregate", row["cost_usd"] or "N/A"))
     return output.getvalue()
 
 
@@ -568,6 +679,22 @@ def build_markdown_report(report: AnalysisReport) -> str:
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
             lines.append(f"| {provider} | {', '.join(data.get('observed_providers', []))} | {model} | {mode[:-1]} | {data['tokens']:,} | {_cost_display(data)} | {_lane_display(data, 'actual_cost')} | {_lane_display(data, 'api_equivalent_estimate')} | {_cost_status(data)} |")
+    lane = report.aggregate_imports
+    if lane and lane.rows:
+        lines += ["", "## Provider-Reported Aggregates", "",
+                  f"Imported buckets: {lane.totals['rows']:,}",
+                  f"Reported cost (USD): {_lane_usd(lane.totals['reported_cost_usd'])}", "",
+                  "| Date | Buckets | Tokens | Reported USD | Status |",
+                  "| --- | ---: | ---: | ---: | --- |"]
+        for day, item in sorted(lane.by_date.items()):
+            lines.append(f"| {day} | {item['rows']} | {_lane_tokens(item)} "
+                         f"| {_lane_usd(item['reported_cost_usd'])} "
+                         f"| {'partial' if item['incomplete_rows'] else 'complete'} |")
+        for name in lane.filtered_by:
+            lines += ["", f"Note: --{name} filters local usage only; this lane is unfiltered."]
+        lines += ["", "Provider-reported aggregates are organization-level, not an invoice, "
+                  "exclude cloud provider routes (Amazon Bedrock, Google Vertex, Microsoft "
+                  "Foundry), and are never allocated to local sessions or projects."]
     return "\n".join(lines) + "\n"
 
 
@@ -653,7 +780,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         ("Rank", "Provider", "Model", "Tokens"),
         [(index, leader["provider"], leader["model"], f"{leader['tokens']:,}") for index, leader in enumerate(leaders["combined"], 1)],
     ) + "</section>"
-    pages = {"index.html": page("Eurysx report", "index.html", insights + leader_tables + "<section><h2>COMPARISON SUMMARY</h2>" + table(("Agent", "Total tokens", "Requests", "Turns", "Tool calls", "Known cost", "Daily known"), overview_rows) + "</section>")}
+    pages = {"index.html": page("Eurysx report", "index.html", insights + leader_tables + "<section><h2>COMPARISON SUMMARY</h2>" + table(("Agent", "Total tokens", "Requests", "Turns", "Tool calls", "Known cost", "Daily known"), overview_rows) + "</section>" + _html_aggregate_imports(report, section, table))}
 
     for agent, stats in agents:
         display = report.agent_displays.get(agent)
@@ -692,7 +819,7 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
 def build_json_report(report: AnalysisReport) -> Dict:
     """Assemble the JSON `--output` payload from a structured analysis result."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis_period": {
             "start": str(report.start_date) if report.start_date else "ALL TIME",
             "end": str(report.end_date),
@@ -706,6 +833,7 @@ def build_json_report(report: AnalysisReport) -> Dict:
             for agent, stats in report.agent_stats.items()
         },
         "comparison_summary": {"leaders": _comparison_leaders(report)},
+        "aggregate_imports": _aggregate_import_dict(report.aggregate_imports),
         "period_comparison": {
             agent: {
                 **comparison,

@@ -1,14 +1,18 @@
 import ast
 import json
+import shutil
 import yaml
+import dataclasses
 import io
 import os
 import sqlite3
+import sys
 import tempfile
 import tomllib
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,9 +24,12 @@ import eurysx.pricing as pricing_module
 import eurysx.paths
 import eurysx.pricing
 import eurysx.render
+import eurysx.store as store_module
 from eurysx.collectors import claude_code, codex, opencode
 from eurysx.collectors import pi as pi_collector
 from eurysx.collectors.sources import Source, fingerprint_paths
+from eurysx.imports import anthropic_usage
+from eurysx import imports as imports_module
 from eurysx.store import UsageStore
 
 
@@ -225,6 +232,445 @@ class CollectorFixtureTests(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+
+
+def _report_dig(payload, keys):
+    """Follow a documented key path; the reader module owns the production version."""
+    for key in keys:
+        if not isinstance(payload, dict):
+            return None
+        payload = payload.get(key)
+    return payload
+
+
+class AnthropicImportFixtureShapeTests(unittest.TestCase):
+    """Pins the Anthropic report fixtures to every field the aggregate readers need.
+
+    Fixtures are provisional (documentation-derived) until a real saved response lands;
+    see tests/fixtures/anthropic_usage/README.md.
+    """
+
+    USAGE_KEYS = {
+        "date": ("time_range", "start_date"),
+        "bucket_end": ("time_range", "end_date"),
+        "model": ("model",),
+        "input_uncached": ("iterations", "input_tokens"),
+        "input_cached": ("iterations", "cache_read_input_tokens"),
+        "cache_creation": ("iterations", "cache_creation_input_tokens"),
+        "output": ("iterations", "output_tokens"),
+    }
+    COST_KEYS = {
+        "date": ("time_range", "start_date"),
+        "bucket_end": ("time_range", "end_date"),
+        "cost_usd_cents": ("cost",),
+        "cost_type": ("type",),
+    }
+
+    def _items(self, name):
+        payload = json.loads((FIXTURES / "anthropic_usage" / name).read_text())
+        self.assertIs(payload["has_more"], False)
+        return payload["data"]
+
+    def test_usage_fixture_carries_documented_fields(self):
+        items = self._items("usage-report.json")
+        self.assertGreaterEqual(len(items), 3)
+        for item in items:
+            for name in ("date", "bucket_end"):
+                self.assertIsNotNone(_report_dig(item, self.USAGE_KEYS[name]))
+            for result in item["results"]:
+                for name, path in self.USAGE_KEYS.items():
+                    if name in ("date", "bucket_end"):
+                        continue
+                    self.assertIsNotNone(_report_dig(result, path), f"{name} missing")
+
+    def test_cost_fixture_carries_documented_fields(self):
+        items = self._items("cost-report.json")
+        self.assertGreaterEqual(len(items), 3)
+        for item in items:
+            self.assertIsNotNone(_report_dig(item, self.COST_KEYS["date"]))
+            for result in item["results"]:
+                self.assertIsInstance(result["cost"], str)
+                self.assertIsNotNone(_report_dig(result, self.COST_KEYS["cost_type"]))
+
+    def test_fixtures_keep_documented_null_scope_and_grouping_shapes(self):
+        usage = self._items("usage-report.json")
+        self.assertTrue(any(
+            result["workspace_id"] is None for item in usage for result in item["results"]))
+        cost = self._items("cost-report.json")
+        self.assertTrue(any(
+            _report_dig(result, ("description", "model")) is None
+            for item in cost for result in item["results"]))
+
+    def test_fixtures_cover_distinct_daily_buckets(self):
+        usage_dates = {_report_dig(item, self.USAGE_KEYS["date"])[:10]
+                       for item in self._items("usage-report.json")}
+        cost_dates = {_report_dig(item, self.COST_KEYS["date"])[:10]
+                      for item in self._items("cost-report.json")}
+        self.assertEqual(usage_dates, cost_dates)
+        self.assertEqual(len(usage_dates), 3)
+
+
+class AnthropicUsageReaderTests(unittest.TestCase):
+    """Task 1: the usage-report reader normalizes into aggregate rows only."""
+
+    def _payload(self):
+        return json.loads((FIXTURES / "anthropic_usage" / "usage-report.json").read_text())
+
+    def _rows(self, name="usage-report.json"):
+        return anthropic_usage.read_usage_report(
+            self._payload() if name == "usage-report.json" else
+            json.loads((FIXTURES / "anthropic_usage" / name).read_text()),
+            source_file="/imports/usage-report.json", source_mtime="2026-09-04T09:00:00+00:00",
+            scope_label="acme-organization", ingested_at="2026-09-04T10:00:00+00:00",
+        )
+
+    def test_usage_rows_carry_tokens_dates_and_no_cost(self):
+        rows = self._rows()
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(row.cost_usd is None for row in rows))
+        self.assertTrue(all(row.source_kind == "anthropic-usage-report" for row in rows))
+        self.assertTrue(all(row.scope_label == "acme-organization" for row in rows))
+        self.assertTrue(all(row.date == row.date[:10] and len(row.date) == 10 for row in rows))
+        self.assertTrue(any(row.model == "claude-sonnet-4-5" for row in rows))
+        self.assertEqual(
+            sum(row.input_uncached_tokens for row in rows), 120000 + 4200 + 240000 + 15000)
+
+    def test_usage_rows_are_not_usage_entries(self):
+        self.assertFalse(any(isinstance(row, app.UsageEntry) for row in self._rows()))
+
+    def test_default_workspace_null_is_preserved_not_dropped(self):
+        rows = self._rows()
+        self.assertTrue(any(row.workspace_id is None for row in rows))
+        self.assertTrue(any(row.workspace_id == "ws-1" for row in rows))
+
+    def test_bucket_matching_the_ingest_date_is_flagged_incomplete(self):
+        rows = anthropic_usage.read_usage_report(
+            self._payload(), source_file="/imports/usage-report.json", source_mtime="",
+            scope_label="acme", ingested_at="2026-09-03T10:00:00+00:00")
+        self.assertFalse([row for row in rows if row.date == "2026-09-03"][0].complete)
+        self.assertTrue([row for row in rows if row.date == "2026-09-01"][0].complete)
+
+    def test_duplicate_bucket_with_disagreeing_values_keeps_first_and_counts(self):
+        row = self._rows()[0]
+        clone = dataclasses.replace(row, output_tokens=row.output_tokens + 100)
+        kept, conflicts = anthropic_usage.normalize_rows([row, clone])
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].output_tokens, row.output_tokens)
+        self.assertEqual(conflicts, 1)
+
+    def test_identical_duplicate_pages_are_deduped_without_a_conflict(self):
+        row = self._rows()[0]
+        kept, conflicts = anthropic_usage.normalize_rows([row, dataclasses.replace(row)])
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(conflicts, 0)
+
+    def test_registry_lists_the_parser_version_for_the_usage_kind(self):
+        self.assertEqual(imports_module.IMPORT_PARSER_VERSIONS["anthropic-usage-report"], "1")
+
+
+class AnthropicCostReaderTests(unittest.TestCase):
+    """Task 2: cost reports normalize to USD, carry no tokens, and build one source."""
+
+    def _payload(self):
+        return json.loads((FIXTURES / "anthropic_usage" / "cost-report.json").read_text())
+
+    def _rows(self):
+        return anthropic_usage.read_cost_report(
+            self._payload(), source_file="/imports/cost-report.json",
+            source_mtime="2026-09-04T09:00:00+00:00", scope_label="acme-organization",
+            ingested_at="2026-09-04T10:00:00+00:00")
+
+    def test_cents_are_decimal_usd_not_floats(self):
+        rows = self._rows()
+        priced = [row for row in rows if row.cost_usd is not None]
+        self.assertTrue(priced)
+        self.assertTrue(all(isinstance(row.cost_usd, Decimal) for row in priced))
+        self.assertEqual(priced[0].cost_usd, Decimal("12.505"))
+
+    def test_cost_rows_have_no_token_dimensions(self):
+        self.assertTrue(all(
+            row.input_uncached_tokens is None and row.output_tokens is None
+            and row.input_cached_tokens is None and row.cache_creation_tokens is None
+            for row in self._rows()))
+
+    def test_ungrouped_cost_falls_into_unknown_model(self):
+        rows = self._rows()
+        self.assertTrue(any(row.model is None for row in rows))
+        self.assertTrue(any(row.model == "claude-sonnet-4-5" for row in rows))
+
+    def test_cost_rows_keep_cost_type_and_null_workspace_scope(self):
+        rows = self._rows()
+        self.assertTrue(all(row.cost_type for row in rows))
+        self.assertTrue(any(row.workspace_id is None for row in rows))
+
+    def test_registry_and_parser_versions_cover_both_kinds(self):
+        self.assertEqual(set(imports_module.IMPORT_SOURCES),
+                         {"anthropic-usage-report", "anthropic-cost-report"})
+        self.assertEqual(set(imports_module.IMPORT_PARSER_VERSIONS),
+                         set(imports_module.IMPORT_SOURCES))
+
+    def test_source_key_is_the_declared_glob_and_parse_is_deferred(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "usage-1.json").write_text("{}")
+            (root / "usage-2.json").write_text("{}")
+            source = anthropic_usage.source(
+                "anthropic-usage-report", str(root / "usage-*.json"), "acme",
+                sorted(root.glob("usage-*.json")))
+            self.assertEqual(source.key, f"anthropic-usage-report:{root / 'usage-*.json'}")
+            self.assertEqual(source.parser_version, "1")
+            self.assertTrue(source.fingerprint)
+            with self.assertRaises(ValueError):  # an empty file must not import as zero rows
+                source.parse()
+
+    def test_glob_parse_reports_disagreeing_duplicate_buckets(self):
+        rows = [
+            models.AggregateImportRow(source_kind="anthropic-usage-report", date="2026-09-01",
+                                      model="claude-sonnet-4-5", output_tokens=10, scope_label="acme"),
+            models.AggregateImportRow(source_kind="anthropic-usage-report", date="2026-09-01",
+                                      model="claude-sonnet-4-5", output_tokens=99, scope_label="acme"),
+        ]
+        collected = []
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "usage-1.json"
+            path.write_text("{}")
+            with patch.object(anthropic_usage, "read_usage_report", return_value=rows):
+                source = anthropic_usage.source(
+                    "anthropic-usage-report", str(path.parent / "usage-*.json"), "acme",
+                    [path], collected)
+                parsed = source.parse()
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].output_tokens, 10)
+        self.assertTrue(any("duplicate bucket" in text for text in collected))
+
+    def test_truncated_page_is_reported_as_a_warning(self):
+        collected = []
+        payload = self._payload()
+        payload["has_more"] = True
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "cost-1.json"
+            path.write_text(json.dumps(payload))
+            source = anthropic_usage.source(
+                "anthropic-cost-report", str(path), "acme", [path], collected)
+            source.parse()
+        self.assertTrue(any("has_more" in text for text in collected))
+
+
+def _preferences_with_imports(root, entry):
+    """A PreferencesResolver whose config declares one import entry."""
+    path = root / "preferences.jsonc"
+    agents = {agent: {} for agent in app.PreferencesResolver.SUPPORTED_AGENTS}
+    path.write_text(json.dumps({"agents": agents, "aggregate_imports": [entry]}))
+    return app.PreferencesResolver(config_path=path)
+
+
+class AggregateImportStoreTests(unittest.TestCase):
+    """Task 3: schema v2 stores imported aggregates where events() cannot see them."""
+
+    KEY = "anthropic-usage-report:/imports/usage-*.json"
+
+    def _row(self, **overrides):
+        base = dict(source_kind="anthropic-usage-report", date="2026-09-02",
+                    model="claude-sonnet-4-5", input_uncached_tokens=100,
+                    input_cached_tokens=50, cache_creation_tokens=10, output_tokens=5,
+                    cost_usd=Decimal("1.25"), scope_label="acme",
+                    source_file="/imports/usage-1.json",
+                    source_mtime="2026-09-03T00:00:00+00:00",
+                    ingested_at="2026-09-03T00:00:00+00:00", complete=True)
+        base.update(overrides)
+        return models.AggregateImportRow(**base)
+
+    def test_import_rows_land_in_their_own_table_and_never_in_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "eurysx.db")
+            store.replace_import_source(self.KEY, "fingerprint-1", [self._row()])
+            rows = store.imported_aggregates()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(store.events(), [])
+            self.assertEqual(store.distinct_agents(), [])
+            self.assertFalse(store.has_aggregate_events())
+
+    def test_replacement_is_atomic_and_scoped_to_the_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "eurysx.db")
+            store.replace_import_source(self.KEY, "fp-1",
+                                        [self._row(), self._row(date="2026-09-03")])
+            other = "anthropic-cost-report:/imports/cost-*.json"
+            store.replace_import_source(other, "fp-1",
+                                        [self._row(source_kind="anthropic-cost-report")])
+            store.replace_import_source(self.KEY, "fp-2", [self._row()])
+            rows = store.imported_aggregates()
+            states = store.import_source_states()
+        usage = [row for row in rows if row["source_kind"] == "anthropic-usage-report"]
+        self.assertEqual([row["date"] for row in usage], ["2026-09-02"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(states), 2)
+        self.assertEqual({state["agent"] for state in states},
+                         {store_module.AGENT_AGGREGATE_IMPORTS})
+        self.assertTrue(all(state["last_error"] is None for state in states))
+
+    def test_date_and_model_filters_apply_in_sql(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "eurysx.db")
+            store.replace_import_source(self.KEY, "fp", [
+                self._row(),
+                self._row(date="2026-09-04", model="claude-opus-4-1"),
+                self._row(date="2026-09-04", model=None)])
+            ranged = store.imported_aggregates(start_date=date(2026, 9, 3),
+                                               end_date=date(2026, 9, 5))
+            by_model = store.imported_aggregates(models=["claude-opus-4-1"])
+            all_time = store.imported_aggregates()
+        self.assertEqual([row["date"] for row in ranged], ["2026-09-04", "2026-09-04"])
+        self.assertEqual(len(all_time), 3)
+        # An ungrouped cost row has no model and must stay visible, like the
+        # Phase 3C unknown bucket.
+        self.assertEqual({row["model"] for row in by_model}, {"claude-opus-4-1", None})
+
+    def test_cost_survives_as_decimal_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = UsageStore(Path(temp) / "eurysx.db")
+            store.replace_import_source(self.KEY, "fp", [self._row()])
+            row = store.imported_aggregates()[0]
+        self.assertEqual(row["cost_usd"], "1.25")
+        self.assertEqual(row["complete"], 1)
+
+    def test_v1_store_opens_and_gains_the_new_table(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "eurysx.db"
+            UsageStore(path)
+            with sqlite3.connect(path) as connection:
+                connection.execute("DROP TABLE aggregate_imports")
+                connection.execute("PRAGMA user_version = 1")
+            UsageStore(path)
+            with sqlite3.connect(path) as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                tables = {row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertEqual(version, 2)
+        self.assertIn("aggregate_imports", tables)
+
+    def test_unsupported_schema_version_still_raises(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "eurysx.db"
+            UsageStore(path)
+            with sqlite3.connect(path) as connection:
+                connection.execute("PRAGMA user_version = 99")
+            with self.assertRaises(RuntimeError):
+                UsageStore(path)
+
+
+class AggregateImportCollectionTests(unittest.TestCase):
+    """Task 5: collect ingests declared imports incrementally; report never does."""
+
+    def _entry(self, root, pattern="usage-*.json"):
+        shutil.copy(FIXTURES / "anthropic_usage" / "usage-report.json",
+                    root / "usage-1.json")
+        return {"type": "anthropic-usage-report", "path": str(root / pattern),
+                "scope": "acme"}
+
+    def _restamped(self, root):
+        for path in sorted(root.glob("usage-*.json")):
+            path.write_text("{ not json")
+
+    def test_collect_ingests_declared_imports_without_touching_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            lines = app._refresh_imports(store, [self._entry(root)])
+            rows = store.imported_aggregates()
+            events = store.events()
+            states = store.import_source_states()
+        self.assertTrue(rows)
+        self.assertEqual(events, [])
+        self.assertIn("imported", " ".join(lines).lower())
+        self.assertEqual(states[0]["agent"], store_module.AGENT_AGGREGATE_IMPORTS)
+
+    def test_unchanged_fingerprint_skips_reparse(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            first_state = store.import_source_states()[0]
+            first_ingested = {row["ingested_at"] for row in store.imported_aggregates()}
+            lines = app._refresh_imports(store, [entry])
+            second_state = store.import_source_states()[0]
+            second_ingested = {row["ingested_at"] for row in store.imported_aggregates()}
+        self.assertIn("unchanged", " ".join(lines).lower())
+        self.assertEqual(first_state["collected_at"], second_state["collected_at"])
+        self.assertEqual(first_ingested, second_ingested)
+        self.assertIsNone(second_state["last_error"])
+
+    def test_changed_file_that_fails_to_parse_keeps_last_good_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            before = [row["date"] for row in store.imported_aggregates()]
+            self._restamped(root)
+            lines = app._refresh_imports(store, [entry])
+            after = [row["date"] for row in store.imported_aggregates()]
+            states = store.import_source_states()
+        self.assertEqual(after, before)
+        self.assertIn("failed", " ".join(lines).lower())
+        self.assertTrue(states[0]["last_error"])
+
+    def test_glob_matching_nothing_keeps_rows_and_warns_without_a_harness_warning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            before = [row["date"] for row in store.imported_aggregates()]
+            for path in root.glob("usage-*.json"):
+                path.unlink()
+            output = io.StringIO()
+            with redirect_stderr(output):
+                app._refresh_imports(store, [entry])
+            after = [row["date"] for row in store.imported_aggregates()]
+            states = store.import_source_states()
+            stderr = output.getvalue()
+        self.assertEqual(after, before)
+        self.assertIsNone(states[0]["last_error"])
+        self.assertNotIn("Warning", stderr)
+
+    def test_unreachable_declared_glob_warns_without_a_harness_disk_warning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            for path in root.glob("usage-*.json"):
+                path.unlink()
+            output = io.StringIO()
+            with redirect_stderr(output):
+                app._warn_store_quality(store)
+                app._warn_import_reachability(store, [entry])
+            stderr = output.getvalue()
+        self.assertIn("no matching files", stderr)
+        self.assertNotIn("no longer exist on disk", stderr)
+
+    def test_report_command_reads_stored_imports_without_importing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            for path in root.glob("usage-*.json"):
+                path.unlink()
+            output = root / "report.json"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["eurysx", "report", "--output", str(output)]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root), \
+                    patch.object(app, "collect_sources", side_effect=AssertionError), \
+                    patch.object(app.UsageStore, "replace_import_source",
+                                 side_effect=AssertionError), \
+                    patch.object(app, "PreferencesResolver",
+                                 return_value=_preferences_with_imports(root, entry)), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                app.main()
+        self.assertNotIn("aggregate", stdout.getvalue().lower())
 
 
 class UsageStoreTests(unittest.TestCase):
@@ -1961,6 +2407,375 @@ class PreferencesTests(unittest.TestCase):
         self.assertTrue(preferences.warnings)
 
 
+class AggregateImportConfigTests(unittest.TestCase):
+    """Task 4: declared import entries validate as diagnostics, never exceptions."""
+
+    def _resolver(self, entries):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        agents = {agent: {} for agent in app.PreferencesResolver.SUPPORTED_AGENTS}
+        path = root / "preferences.jsonc"
+        path.write_text(json.dumps({"agents": agents, "aggregate_imports": entries}))
+        return app.PreferencesResolver(config_path=path)
+
+    def test_valid_entries_are_returned_in_order(self):
+        entry = {"type": "anthropic-usage-report", "path": "~/i/u-*.json", "scope": "acme"}
+        resolver = self._resolver([entry])
+        self.assertEqual(resolver.aggregate_imports(), [entry])
+        self.assertEqual(resolver.aggregate_imports(), [entry])
+        self.assertEqual(resolver.warnings, [])
+
+    def test_absent_or_empty_block_is_empty_without_warnings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {}}))
+        self.assertEqual(app.PreferencesResolver(config_path=path).aggregate_imports(), [])
+        self.assertEqual(self._resolver([]).aggregate_imports(), [])
+
+    def test_unknown_type_is_a_warning_not_an_exception(self):
+        resolver = self._resolver([{"type": "openai-usage", "path": "~/i/x.json",
+                                    "scope": "acme"}])
+        self.assertEqual(resolver.aggregate_imports(), [])
+        self.assertIn("aggregate import entry ignored: unsupported type openai-usage",
+                      " | ".join(resolver.warnings))
+
+    def test_missing_path_or_scope_is_a_warning(self):
+        resolver = self._resolver([
+            {"type": "anthropic-usage-report", "scope": "acme"},
+            {"type": "anthropic-cost-report", "path": "~/i/c.json"}])
+        self.assertEqual(resolver.aggregate_imports(), [])
+        self.assertEqual(len(resolver.warnings), 2)
+
+    def test_non_object_entry_and_non_array_block_are_warnings(self):
+        resolver = self._resolver(["nope"])
+        self.assertEqual(resolver.aggregate_imports(), [])
+        self.assertIn("each entry must be an object", " | ".join(resolver.warnings))
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "preferences.jsonc"
+            path.write_text(json.dumps({"agents": {}, "aggregate_imports": "nope"}))
+            resolver = app.PreferencesResolver(config_path=path)
+        self.assertEqual(resolver.aggregate_imports(), [])
+        self.assertIn("aggregate_imports must be an array", " | ".join(resolver.warnings))
+
+    def test_shipped_sample_declares_no_imports_and_stays_valid(self):
+        sample = Path(__file__).parent.parent / "config" / "preferences.jsonc.sample"
+        resolver = app.PreferencesResolver(config_path=sample)
+        self.assertEqual(resolver.aggregate_imports(), [])
+        self.assertEqual([warning for warning in resolver.warnings
+                          if "aggregate import" in warning], [])
+
+
+IMPORT_FIXTURE_ROWS = [
+    {"source_kind": "anthropic-usage-report", "scope_label": "acme", "date": "2026-09-01",
+     "model": "claude-sonnet-4-5", "input_uncached_tokens": 100, "input_cached_tokens": 50,
+     "cache_creation_tokens": 10, "output_tokens": 20, "cost_usd": None, "cost_type": None,
+     "workspace_id": "ws-1", "complete": 1, "source_file": "/i/u-1.json",
+     "source_mtime": "2026-09-02T00:00:00+00:00", "ingested_at": "2026-09-02T00:00:00+00:00"},
+    {"source_kind": "anthropic-cost-report", "scope_label": "acme", "date": "2026-09-02",
+     "model": "claude-sonnet-4-5", "input_uncached_tokens": None, "input_cached_tokens": None,
+     "cache_creation_tokens": None, "output_tokens": None, "cost_usd": "12.50",
+     "cost_type": "token_usage", "workspace_id": None, "complete": 1,
+     "source_file": "/i/c-1.json", "source_mtime": "2026-09-03T00:00:00+00:00",
+     "ingested_at": "2026-09-03T00:00:00+00:00"},
+]
+
+
+class AggregateImportAnalysisTests(unittest.TestCase):
+    """Task 6: the aggregate lane rolls up on its own and never touches local stats."""
+
+    def _summary(self, rows=None, **kwargs):
+        options = dict(aggregates_present=False, today=date(2026, 9, 10), active_filters=())
+        options.update(kwargs)
+        return app.UsageAnalyzer.summarize_imports(
+            IMPORT_FIXTURE_ROWS if rows is None else rows, **options)
+
+    def test_totals_keep_tokens_and_reported_usd_separate(self):
+        summary = self._summary()
+        self.assertEqual(summary.totals["input_uncached_tokens"], 100)
+        self.assertEqual(summary.totals["output_tokens"], 20)
+        self.assertEqual(summary.totals["reported_cost_usd"], 12.5)
+        self.assertEqual(summary.totals["rows_with_reported_cost"], 1)
+        self.assertEqual(summary.totals["rows"], 2)
+
+    def test_usage_only_source_reports_no_cost_as_unavailable(self):
+        summary = self._summary(rows=IMPORT_FIXTURE_ROWS[:1])
+        self.assertIsNone(summary.totals["reported_cost_usd"])
+        self.assertEqual(summary.totals["rows_with_reported_cost"], 0)
+
+    def test_by_date_and_by_model_rollups(self):
+        summary = self._summary()
+        self.assertEqual(sorted(summary.by_date), ["2026-09-01", "2026-09-02"])
+        self.assertEqual(summary.by_model["claude-sonnet-4-5"]["reported_cost_usd"], 12.5)
+        self.assertEqual(summary.by_date["2026-09-01"]["input_uncached_tokens"], 100)
+
+    def test_ungrouped_cost_rolls_up_as_unknown(self):
+        summary = self._summary(rows=[dict(IMPORT_FIXTURE_ROWS[1], model=None)])
+        self.assertEqual(list(summary.by_model), ["unknown"])
+
+    def test_source_freshness_and_newest_complete_bucket(self):
+        summary = self._summary()
+        source = summary.sources["/i/u-1.json"]
+        self.assertEqual(source["scope"], "acme")
+        self.assertEqual(source["newest_complete_date"], "2026-09-01")
+        self.assertEqual(source["rows"], 1)
+
+    def test_stale_source_warning(self):
+        summary = self._summary(today=date(2026, 12, 31))
+        self.assertTrue(any("stale" in warning for warning in summary.warnings))
+
+    def test_partial_bucket_warning(self):
+        rows = IMPORT_FIXTURE_ROWS + [dict(IMPORT_FIXTURE_ROWS[0], date="2026-09-10",
+                                          complete=0)]
+        summary = self._summary(rows=rows, today=date(2026, 9, 10))
+        self.assertTrue(any("in progress" in warning for warning in summary.warnings))
+        self.assertEqual(summary.by_date["2026-09-10"]["incomplete_rows"], 1)
+
+    def test_overlap_with_local_aggregates_is_disclosed_not_merged(self):
+        summary = self._summary(aggregates_present=True)
+        self.assertTrue(any("overlap local claude-code aggregate usage" in warning
+                            for warning in summary.warnings))
+
+    def test_two_scopes_covering_the_same_days_warn_about_double_counting(self):
+        rows = IMPORT_FIXTURE_ROWS + [dict(row, scope_label="other-organization")
+                                      for row in IMPORT_FIXTURE_ROWS]
+        summary = self._summary(rows=rows)
+        self.assertTrue(any("overlap each other" in warning for warning in summary.warnings))
+
+    def test_inapplicable_selectors_are_disclosed(self):
+        summary = self._summary(active_filters=("billing-mode",))
+        self.assertEqual(summary.filtered_by, ["billing-mode"])
+
+    def test_empty_rows_produce_an_explicit_empty_summary(self):
+        summary = self._summary(rows=[])
+        self.assertEqual((summary.by_date, summary.by_model, summary.warnings), ({}, {}, []))
+        self.assertEqual(summary.totals["rows"], 0)
+        self.assertIsNone(summary.totals["reported_cost_usd"])
+
+
+class AggregateImportIsolationTests(unittest.TestCase):
+    """Task 6: stored imports change the aggregate lane and nothing else."""
+
+    def _seed(self, root, with_imports):
+        store = UsageStore(root / "data" / "eurysx.db")
+        usage = app.UsageEntry(
+            agent="pi", model_id="model", timestamp="2026-09-01T12:00:00Z",
+            input_tokens=10, output_tokens=20, cache_read_tokens=0, cache_write_tokens=0,
+            total_tokens=30, cost=1.0, cost_breakdown={"total": 1.0}, provider="openai",
+            observed_provider="openai", cost_status="recorded", session_id="s1",
+            project_id="/repo/a", model_requests=1, model_turns=1, model_tool_calls=1)
+        aggregate = app.UsageEntry(
+            agent="claude-code", model_id="claude-sonnet-4-5", timestamp="2026-09-03",
+            input_tokens=100, output_tokens=10, cache_read_tokens=0, cache_write_tokens=0,
+            total_tokens=110, cost=0.0, cost_breakdown={}, is_aggregated=True)
+        store.replace_source("pi:s1", "pi", "fp", [usage])
+        store.replace_source("claude-code:stats", "claude-code", "fp", [aggregate])
+        if with_imports:
+            store.replace_import_source("anthropic-usage-report:/i/u-*.json", "fp", [
+                models.AggregateImportRow(
+                    source_kind="anthropic-usage-report", date="2026-09-01",
+                    model="claude-sonnet-4-5", input_uncached_tokens=500,
+                    output_tokens=90, scope_label="acme", source_file="/i/u-1.json",
+                    ingested_at="2026-09-02T00:00:00+00:00")])
+
+    def _report(self, with_imports):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._seed(root, with_imports)
+            output = root / "report.json"
+            pricing = app.PricingResolver(root / "missing.jsonc", root / "cache")
+            prefs = app.PreferencesResolver(root / "missing-prefs.jsonc")
+            stderr = io.StringIO()
+            with patch("sys.argv", ["eurysx", "report", "--output", str(output)]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root / "data"), \
+                    patch.object(app, "PricingResolver", return_value=pricing), \
+                    patch.object(app, "PreferencesResolver", return_value=prefs), \
+                    patch.object(app.UsageStore, "replace_import_source",
+                                 side_effect=AssertionError), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                app.main()
+            # Scrub the per-run temp root so the two payloads are comparable: the
+            # provenance blocks echo absolute config paths, which are not the subject.
+            return (json.loads(output.read_text().replace(str(root), "<temp>")),
+                    stderr.getvalue().replace(str(root), "<temp>"))
+
+    def test_report_command_never_imports(self):
+        payload, _ = self._report(with_imports=True)
+        self.assertIn("pi", payload["agent_stats"])
+
+    def test_local_totals_coverage_pacing_and_comparison_are_unchanged(self):
+        baseline, _ = self._report(False)
+        with_imports, _ = self._report(True)
+        baseline_lane = baseline.pop("aggregate_imports")
+        import_lane = with_imports.pop("aggregate_imports")
+        # Every pre-existing field is byte-identical: the lane is purely additive.
+        self.assertEqual(baseline, with_imports)
+        self.assertNotIn("anthropic-aggregate", with_imports["agent_stats"])
+        self.assertEqual(baseline_lane["totals"]["rows"], 0)
+        self.assertEqual(baseline["agent_stats"]["pi"]["known_cost"], 1.0)
+        self.assertEqual(import_lane["totals"]["rows"], 1)
+        self.assertEqual(import_lane["totals"]["input_uncached_tokens"], 500)
+        self.assertIsNone(import_lane["totals"]["reported_cost_usd"])
+        self.assertEqual(baseline["agent_stats"]["claude-code"]["total_tokens"],
+                         with_imports["agent_stats"]["claude-code"]["total_tokens"])
+
+    def test_overlap_with_local_aggregates_warns_on_stderr(self):
+        _, baseline_err = self._report(False)
+        _, import_err = self._report(True)
+        self.assertNotIn("overlap local claude-code aggregate", baseline_err)
+        self.assertIn("overlap local claude-code aggregate", import_err)
+
+
+class AggregateImportPresenterTests(unittest.TestCase):
+    """Task 7: terminal and JSON render the lane from the same analysis result."""
+
+    def _report(self, rows=True, **options):
+        report = models.AnalysisReport(start_date=date(2026, 9, 1), end_date=date(2026, 9, 10),
+                                       period_label="2026-09-01 to 2026-09-10")
+        choices = dict(aggregates_present=True, today=date(2026, 9, 11), active_filters=())
+        choices.update(options)
+        report.aggregate_imports = app.UsageAnalyzer.summarize_imports(
+            IMPORT_FIXTURE_ROWS if rows else [], **choices)
+        return report
+
+    def test_terminal_renders_the_lane_with_scope_freshness_and_caveat(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_aggregate_imports(self._report())
+        text = output.getvalue()
+        self.assertIn("PROVIDER-REPORTED AGGREGATES", text)
+        self.assertIn("acme", text)
+        self.assertIn("not an invoice", text)
+        self.assertIn("Bedrock", text)
+        self.assertIn("REPORTED BY DAY", text)
+        self.assertIn("REPORTED BY MODEL", text)
+        self.assertIn("$12.50", text)
+
+    def test_terminal_omits_the_section_when_nothing_is_imported(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_aggregate_imports(self._report(rows=False))
+        self.assertNotIn("PROVIDER-REPORTED AGGREGATES", output.getvalue())
+
+    def test_terminal_notes_selectors_that_do_not_filter_the_lane(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app.print_aggregate_imports(self._report(active_filters=("billing-mode",)))
+        self.assertIn("billing-mode", output.getvalue())
+        self.assertIn("local usage only", output.getvalue())
+
+    def test_json_contract_version_2_adds_the_lane_with_an_explicit_empty_shape(self):
+        payload = app.build_json_report(self._report(rows=False))
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["aggregate_imports"]["totals"]["rows"], 0)
+        self.assertIsNone(payload["aggregate_imports"]["totals"]["reported_cost_usd"])
+        self.assertEqual(payload["aggregate_imports"]["by_date"], {})
+        self.assertEqual(payload["aggregate_imports"]["provenance"],
+                         "provider_reported_aggregate")
+
+    def test_json_lane_carries_rollups_and_warnings(self):
+        payload = app.build_json_report(self._report())
+        lane = payload["aggregate_imports"]
+        self.assertEqual(lane["totals"]["reported_cost_usd"], 12.5)
+        self.assertEqual(sorted(lane["by_date"]), ["2026-09-01", "2026-09-02"])
+        self.assertEqual(lane["filters_not_applied"], [])
+        self.assertTrue(any("overlap" in warning for warning in lane["warnings"]))
+        self.assertEqual(len(lane["rows"]), 2)
+
+
+class AggregateImportExportTests(unittest.TestCase):
+    """Task 8: CSV, Markdown, and HTML render the lane from the same analysis result."""
+
+    def _report(self, rows=True):
+        report = models.AnalysisReport(start_date=date(2026, 9, 1), end_date=date(2026, 9, 10),
+                                       period_label="2026-09-01 to 2026-09-10")
+        report.agent_stats["pi"] = models.AgentStats(agent="pi")
+        report.aggregate_imports = app.UsageAnalyzer.summarize_imports(
+            IMPORT_FIXTURE_ROWS if rows else [], aggregates_present=False,
+            today=date(2026, 9, 11), active_filters=())
+        return report
+
+    def test_csv_marks_the_lane_rows_and_carries_reported_usd(self):
+        csv_text = app.build_csv_report(self._report())
+        self.assertIn("reported_cost_usd", csv_text.splitlines()[0])
+        self.assertIn("reported_aggregate,acme,anthropic-cost-report", csv_text)
+        self.assertIn("12.5", csv_text)
+
+    def test_markdown_renders_the_section_and_caveat(self):
+        markdown = app.build_markdown_report(self._report())
+        self.assertIn("## Provider-Reported Aggregates", markdown)
+        self.assertIn("not an invoice", markdown)
+        self.assertIn("2026-09-01", markdown)
+
+    def test_html_lane_is_index_only_sortable_and_collapsible(self):
+        pages = app.build_html_reports(self._report())
+        index = pages["index.html"]
+        self.assertIn("Provider-Reported Aggregates", index)
+        self.assertIn('class="sortable"', index)
+        for name, page in pages.items():
+            if name != "index.html":
+                self.assertNotIn("Provider-Reported Aggregates", page)
+
+    def test_exports_omit_the_lane_when_nothing_is_imported(self):
+        empty = self._report(rows=False)
+        self.assertNotIn("reported_aggregate,", app.build_csv_report(empty))
+        self.assertNotIn("Provider-Reported Aggregates", app.build_markdown_report(empty))
+        self.assertNotIn("Provider-Reported Aggregates", app.build_html_reports(empty)["index.html"])
+
+
+class AggregateImportDoctorTests(unittest.TestCase):
+    """Task 9: doctor reports declared imports read-only, with rows and freshness."""
+
+    def _setup(self, root, reachable=True):
+        store = UsageStore(root / "eurysx.db")
+        entry = {"type": "anthropic-usage-report",
+                 "path": str(root / "usage-*.json"), "scope": "acme"}
+        if reachable:
+            shutil.copy(FIXTURES / "anthropic_usage" / "usage-report.json",
+                        root / "usage-1.json")
+        app._refresh_imports(store, [entry])
+        return store, entry
+
+    def _doctor(self, store, entry):
+        preferences = _preferences_with_imports(store.path.parent, entry)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            app._print_doctor(store, app.PricingResolver(inspect_only=True), preferences)
+        return output.getvalue()
+
+    def test_doctor_lists_rows_freshness_and_collected_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store, entry = self._setup(root)
+            text = self._doctor(store, entry)
+        self.assertIn("AGGREGATE IMPORTS", text)
+        self.assertIn("acme", text)
+        self.assertIn("rows: 4", text)
+        self.assertIn("newest complete bucket:", text)
+        self.assertIn("unchanged", text)
+
+    def test_doctor_reports_an_unreachable_entry_without_deleting_anything(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store, entry = self._setup(root)
+            for path in root.glob("usage-*.json"):
+                path.unlink()
+            before = store.imported_aggregates()
+            text = self._doctor(store, entry)
+            self.assertEqual(len(store.imported_aggregates()), len(before))
+        self.assertIn("0 file(s) matched", text)
+        self.assertIn("unreachable", text)
+
+    def test_doctor_says_so_when_nothing_is_declared(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            preferences = app.PreferencesResolver(root / "missing-prefs.jsonc")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                app._print_doctor(store, app.PricingResolver(inspect_only=True), preferences)
+        self.assertIn("No aggregate imports configured.", output.getvalue())
+
+
 class DateRangeTests(unittest.TestCase):
     def test_command_after_agent_is_not_consumed_as_an_agent(self):
         args = app.parse_args(["--agent", "codex", "report"])
@@ -2230,8 +3045,8 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     """Pre-refactor baseline: locks the report shape Act III Phase 2 and 6 diff against."""
 
     TOP_LEVEL_KEYS = [
-        "agent_stats", "agents_analyzed", "analysis_period", "comparison_summary", "period_comparison",
-        "preferences", "pricing", "schema_version",
+        "agent_stats", "agents_analyzed", "aggregate_imports", "analysis_period",
+        "comparison_summary", "period_comparison", "preferences", "pricing", "schema_version",
     ]
     AGENT_STATS_KEYS = sorted([
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
@@ -2384,10 +3199,14 @@ class Act3Phase1BaselineTests(unittest.TestCase):
         stats = report["agent_stats"]["pi"]
         self.assertTrue(set(self.AGENT_STATS_KEYS).issubset(stats))
         self.assertTrue({"actual_cost_usd", "api_equivalent_estimate_usd", "estimate_status_counts", "estimate_entries"}.issubset(stats))
+        # Version 2 adds the aggregate lane only; every pre-existing key is unchanged.
+        self.assertEqual(report["aggregate_imports"]["totals"]["rows"], 0)
+        self.assertEqual(report["aggregate_imports"]["provenance"],
+                         "provider_reported_aggregate")
 
     def test_json_values_are_the_locked_baseline(self):
         report, _ = self._run()
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["agents_analyzed"], ["pi"])
         self.assertEqual(report["analysis_period"], {
             "start": "2026-08-01", "end": "2026-08-01",
@@ -2493,15 +3312,62 @@ class PresentationBoundaryTests(unittest.TestCase):
             self.assertNotIn("render", imports(path), path)
 
 
+class AggregateImportBoundaryTests(unittest.TestCase):
+    """Task 10: the guards that keep imported aggregates out of every local lane."""
+
+    def _modules(self, path):
+        tree = ast.parse(path.read_text())
+        found = {node.module for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module}
+        found |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                  for alias in node.names}
+        return found
+
+    def test_import_package_never_touches_pricing_storage_or_presentation(self):
+        root = Path(__file__).parent.parent / "src" / "eurysx" / "imports"
+        paths = sorted(root.glob("*.py"))
+        self.assertTrue(paths)
+        for path in paths:
+            modules = {name for name in self._modules(path)
+                       if any(forbidden in name for forbidden in ("pricing", "render", "store"))}
+            self.assertEqual(modules, set(), path)
+
+    def test_render_does_not_import_the_reader_package(self):
+        root = Path(__file__).parent.parent / "src" / "eurysx"
+        self.assertNotIn("imports", self._modules(root / "render.py"))
+
+    def test_imported_rows_are_never_usage_entries(self):
+        ingested = "2026-09-04T10:00:00+00:00"
+        for name, reader in (("usage-report.json", anthropic_usage.read_usage_report),
+                             ("cost-report.json", anthropic_usage.read_cost_report)):
+            payload = json.loads((FIXTURES / "anthropic_usage" / name).read_text())
+            rows = reader(payload, source_file=f"/i/{name}", source_mtime="",
+                          scope_label="acme", ingested_at=ingested)
+            self.assertTrue(rows)
+            self.assertFalse(any(isinstance(row, models.UsageEntry) for row in rows), name)
+
+    def test_fixtures_carry_no_identifiers_or_content_fields(self):
+        for name in ("usage-report.json", "cost-report.json"):
+            text = (FIXTURES / "anthropic_usage" / name).read_text().lower()
+            for forbidden in ("sk-ant", "authorization", "api_key", "email", "prompt",
+                             "content", "tool_use", '"text"', "credential", "token_limit"):
+                self.assertNotIn(forbidden, text, f"{name} contains {forbidden}")
+
+
 class ManualDriftTests(unittest.TestCase):
     def test_manual_contract_terms_exist_in_source(self):
         root = Path(__file__).parent.parent
         cli = (root / "src" / "eurysx" / "cli.py").read_text()
         render = (root / "src" / "eurysx" / "render.py").read_text()
         manual = (root / "docs" / "manual.md").read_text()
-        for term in ("--agent", "--format", "--output", "doctor", "stored source(s) no longer exist on disk"):
-            self.assertIn(term, cli + manual)
-        for key in ("schema_version", "unresolved_routes", "pacing"):
+        pricing = (root / "src" / "eurysx" / "pricing.py").read_text()
+        store = (root / "src" / "eurysx" / "store.py").read_text()
+        for term in ("--agent", "--format", "--output", "doctor", "stored source(s) no longer exist on disk",
+                     "aggregate_imports", "provider_reported_aggregate", "PROVIDER-REPORTED AGGREGATES",
+                     "reported_cost_usd", "no matching files"):
+            self.assertIn(term, cli + manual + render + pricing + store)
+        for key in ("schema_version", "unresolved_routes", "pacing", "aggregate_imports",
+                    "provenance", "filters_not_applied"):
             self.assertIn(key, render)
             self.assertIn(key, manual)
 
@@ -2515,7 +3381,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.4")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.5")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:
