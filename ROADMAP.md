@@ -211,10 +211,9 @@ Non-goal: dividing subscription fees by tokens or inferring a per-token subscrip
 
 Use Anthropic's official organization-level usage and cost reporting where the user has access, without pretending aggregate data is session-level data.
 
-Shipped in v0.1.5 as a file-only import lane: no API client, no credential reads, and a provider-reported aggregate lane that is structurally invisible to `store.events()`.
+Shipped in v0.1.5 as a file-only import lane: no API client, no credential reads, and a provider-reported aggregate lane that is structurally invisible to `store.events()`. Both Usage & Cost readers landed on documentation-derived fixtures; live-shape verification, Console CSV, and Claude Code Analytics moved to the deferred block below because organization report access is unavailable here.
 
 - [x] Define a provider-reported aggregate import contract for JSON/CSV or a deliberately explicit API response input. (JSON saved responses only; Console CSV deferred below.)
-- [ ] Support Anthropic Usage & Cost and/or Claude Code Analytics report shapes only after their fields and scope are verified against fixtures. (Both Usage & Cost readers shipped; the pinned fixtures are provisional and documentation-derived, so this stays open until a live saved response verifies the key maps.)
 - [x] Record model, date, actor/account scope, token dimensions, estimated or reported USD cost, source, and freshness metadata without storing credentials or conversation content. (Account and workspace scope; per-user actor scope arrives with the Analytics reader.)
 - [x] Mark imported rows as aggregate and keep them outside session/project allocation unless a documented, stable join key exists.
 - [x] Prevent imported aggregate cost from being double-counted with local Claude Code stats-cache usage; define replacement, reconciliation, or separate-report behavior explicitly. (Separate-report behavior, with an overlap warning.)
@@ -226,7 +225,7 @@ Non-goal: automatically reading Anthropic credentials or allocating one organiza
 
 #### Deferred Phase 11 follow-ups
 
-- [ ] Verify `REPORT_KEYS`/`COST_KEYS` and `tests/fixtures/anthropic_usage/` against a live saved Usage & Cost response, then close the second bullet. Reader logic is key-name independent; expect only the maps and fixtures to change.
+- [ ] Support Anthropic Usage & Cost and/or Claude Code Analytics report shapes only after their fields and scope are verified against fixtures. Both Usage & Cost readers shipped; their `REPORT_KEYS`/`COST_KEYS` maps and `tests/fixtures/anthropic_usage/` remain documentation-derived. Blocked on organization report access with no timeline — reader logic is key-name independent, so verifying a live saved response should only change the maps and fixtures.
 - [ ] Add a Console CSV export reader once a real export is available to pin its columns.
 - [ ] Add the Claude Code Analytics reader for per-user/actor scope and `estimated_cost`, with its own verified fixtures.
 - [ ] Decide later whether an import should ever reconcile with local stats; the current contract discloses overlap and merges nothing.
