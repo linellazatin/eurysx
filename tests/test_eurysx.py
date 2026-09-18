@@ -651,6 +651,22 @@ class AggregateImportCollectionTests(unittest.TestCase):
         self.assertIn("no matching files", stderr)
         self.assertNotIn("no longer exist on disk", stderr)
 
+    def test_invalid_import_entry_warning_reaches_the_cli(self):
+        """Validation is lazy, so the warning must flush after aggregate_imports() runs."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bad = {"type": "openai-cost-report", "path": str(root / "x.json"), "scope": "acme"}
+            preferences = _preferences_with_imports(root, bad)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["eurysx", "collect"]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root), \
+                    patch.object(app, "detect_agents", return_value=[]), \
+                    patch.object(app, "PreferencesResolver", return_value=preferences), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                app.main()
+        self.assertIn("aggregate import entry ignored: unsupported type openai-cost-report",
+                      stderr.getvalue())
+
     def test_collect_ingests_imports_without_any_local_harness_history(self):
         """Declared imports must ingest even when no harness is detected."""
         with tempfile.TemporaryDirectory() as temp:

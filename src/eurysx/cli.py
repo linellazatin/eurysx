@@ -402,6 +402,9 @@ def main(argv=None):
     resolver = PricingResolver(force_refresh=args.refresh_pricing)
     preferences = PreferencesResolver()
     store = UsageStore(get_eurysx_data_dir() / "eurysx.db")
+    # Validate declared imports before flushing preference warnings: the check is lazy, so
+    # an entry-ignored warning would otherwise be registered after the print loop and lost.
+    import_entries = preferences.aggregate_imports()
     for warning in resolver.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     for warning in preferences.warnings:
@@ -415,7 +418,7 @@ def main(argv=None):
         read_agents = None
         agents_to_analyze = None if args.command == "report" else detect_agents()
         if args.command != "report" and not agents_to_analyze:
-            if not preferences.aggregate_imports():
+            if not import_entries:
                 print("No agents detected. Check if any agents are installed.")
                 return
             # Provider-reported imports are harness-independent: an imports-only machine still
@@ -433,7 +436,6 @@ def main(argv=None):
         if agents_to_analyze:
             print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
         _refresh_store(store, agents_to_analyze)
-        import_entries = preferences.aggregate_imports()
         if import_entries:
             print("Refreshing declared aggregate imports...")
             for line in _refresh_imports(store, import_entries):
@@ -450,7 +452,7 @@ def main(argv=None):
             file=sys.stderr,
         )
     _warn_store_quality(store)
-    _warn_import_reachability(store, preferences.aggregate_imports())
+    _warn_import_reachability(store, import_entries)
     store_agents = store.distinct_agents(read_agents)
     for record in store.events(read_agents, start_date, end_date,
                                models=args.model, providers=args.provider):
