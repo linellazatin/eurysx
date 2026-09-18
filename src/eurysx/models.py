@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 
@@ -50,6 +51,36 @@ class UsageMetrics:
     model_requests: int = 0
     model_turns: int = 0
     model_tool_calls: int = 0
+
+
+@dataclass
+class AggregateImportRow:
+    """One provider-reported aggregate bucket; never a session-level usage entry.
+
+    Deliberately not a UsageEntry: imported aggregates cannot reach pricing,
+    attribution, or any local cost lane.
+    """
+    source_kind: str
+    date: str
+    model: Optional[str] = None
+    bucket_end: Optional[str] = None
+    input_uncached_tokens: Optional[int] = None
+    input_cached_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cost_usd: Optional[Decimal] = None
+    cost_type: Optional[str] = None
+    workspace_id: Optional[str] = None
+    service_tier: Optional[str] = None
+    context_window: Optional[str] = None
+    inference_geo: Optional[str] = None
+    speed: Optional[str] = None
+    scope_label: str = ""
+    source_file: str = ""
+    source_mtime: str = ""
+    ingested_at: str = ""
+    parser_version: str = "1"
+    complete: bool = True
 
 
 @dataclass
@@ -148,6 +179,18 @@ class AgentDisplay:
 
 
 @dataclass
+class AggregateImportSummary:
+    """Provider-reported aggregate lane: its own totals, never summed into agent stats."""
+    rows: List[Dict[str, Any]] = field(default_factory=list)
+    by_date: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    by_model: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    totals: Dict[str, Any] = field(default_factory=dict)
+    sources: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+    filtered_by: List[str] = field(default_factory=list)
+
+
+@dataclass
 class AnalysisReport:
     """Structured analysis result consumed by every presenter (terminal, JSON, ...)."""
     start_date: Optional[date]
@@ -156,5 +199,6 @@ class AnalysisReport:
     agent_stats: Dict[str, AgentStats] = field(default_factory=dict)
     agent_displays: Dict[str, AgentDisplay] = field(default_factory=dict)
     period_comparison: Dict[str, Any] = field(default_factory=dict)
+    aggregate_imports: AggregateImportSummary = field(default_factory=AggregateImportSummary)
     pricing: Dict[str, Any] = field(default_factory=dict)
     preferences: Dict[str, Any] = field(default_factory=dict)

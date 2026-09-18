@@ -28,5 +28,25 @@
     "pi": {
       "billingMode": "unknown"
     }
-  }
+  },
+  // Optional: provider-reported aggregate imports. Eurysx makes no API calls and
+  // never reads credentials; you download the reports yourself and declare the
+  // files here. type: anthropic-usage-report | anthropic-cost-report. path: explicit
+  // glob of saved report files, no default; one source is the whole glob, so save
+  // every paginated file into it. scope: required free-text account label. Entries
+  // are aggregate cost data, not a price source or billing policy, and are never
+  // allocated to local sessions or added to known cost, pacing, or estimates.
+  // Example (both entries are commented out, so a fresh checkout imports nothing):
+  // "aggregate_imports": [
+  //   {
+  //     "type": "anthropic-usage-report",
+  //     "path": "~/reports/anthropic/usage-*.json",
+  //     "scope": "acme-organization"
+  //   },
+  //   {
+  //     "type": "anthropic-cost-report",
+  //     "path": "~/reports/anthropic/cost-*.json",
+  //     "scope": "acme-organization"
+  //   }
+  // ]
 }

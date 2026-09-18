@@ -1,0 +1,89 @@
+{
+  "data": [
+    {
+      "object": "usage_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-01T00:00:00Z",
+        "end_date": "2026-09-02T00:00:00Z"
+      },
+      "results": [
+        {
+          "model": "claude-sonnet-4-5",
+          "workspace_id": "ws-1",
+          "service_tier": "standard",
+          "context_window": "0-200k",
+          "inference_geo": "global",
+          "speed": "standard",
+          "iterations": {
+            "input_tokens": 120000,
+            "cache_read_input_tokens": 900000,
+            "cache_creation_input_tokens": 150000,
+            "output_tokens": 30000
+          }
+        },
+        {
+          "model": "claude-opus-4-1",
+          "workspace_id": null,
+          "service_tier": "standard",
+          "context_window": "0-200k",
+          "inference_geo": "not_available",
+          "speed": "standard",
+          "iterations": {
+            "input_tokens": 4200,
+            "cache_read_input_tokens": 8000,
+            "cache_creation_input_tokens": 1200,
+            "output_tokens": 900
+          }
+        }
+      ]
+    },
+    {
+      "object": "usage_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-02T00:00:00Z",
+        "end_date": "2026-09-03T00:00:00Z"
+      },
+      "results": [
+        {
+          "model": "claude-sonnet-4-5",
+          "workspace_id": "ws-1",
+          "service_tier": "batch",
+          "context_window": "200k-1M",
+          "inference_geo": "us",
+          "speed": "standard",
+          "iterations": {
+            "input_tokens": 240000,
+            "cache_read_input_tokens": 1800000,
+            "cache_creation_input_tokens": 300000,
+            "output_tokens": 61000
+          }
+        }
+      ]
+    },
+    {
+      "object": "usage_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-03T00:00:00Z",
+        "end_date": "2026-09-04T00:00:00Z"
+      },
+      "results": [
+        {
+          "model": "claude-sonnet-4-5",
+          "workspace_id": null,
+          "service_tier": "standard",
+          "context_window": "0-200k",
+          "inference_geo": "global",
+          "speed": "fast",
+          "iterations": {
+            "input_tokens": 15000,
+            "cache_read_input_tokens": 60000,
+            "cache_creation_input_tokens": 9000,
+            "output_tokens": 4000
+          }
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "next_page": null
+}

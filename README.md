@@ -8,9 +8,9 @@
 
 Local-first usage observability for Claude Code, OpenCode, Pi, and Codex.
 
-Eurysx reads local agent history and reports tokens, requests, turns, tool calls, estimated or recorded cost, and pricing provenance. It does not upload usage data or persist prompts, responses, file contents, tool arguments, or tool results.
+Eurysx reads local agent history and reports tokens, requests, turns, tool calls, estimated or recorded cost, and pricing provenance. Provider-reported organization aggregates can be imported from report files you saved yourself, shown as a separate lane that is never mixed into local cost. Eurysx makes no API calls and does not upload usage data or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.1.4 is a local CLI, not a hosted service.
+> Eurysx v0.2.0 is a local CLI, not a hosted service.
 
 ## What the name means
 
@@ -63,6 +63,7 @@ The [User manual](docs/manual.md) is the authoritative command, output, configur
 - Pricing data is metadata only. Source pricing may be unavailable, in which case the relevant cost remains unknown.
 - Preferences use recorded route metadata or exact user rules. Eurysx does not call LiteLLM or provider APIs for route discovery and never reads credentials.
 - API-equivalent estimates are opt-in, never invoices or budget spend. All report formats distinguish them from harness-recorded cost; see the User manual for the JSON fields and `N/A` behavior.
+- Anthropic aggregate imports are organization-level daily totals read from report files you saved yourself: no API calls, no credential reads, and no session or project attribution. They are never added to local known cost, coverage, pacing, or period comparisons, and they exclude Bedrock, Vertex, and Foundry routes. Claude Code Analytics and Console CSV imports are not supported yet.
 
 ## Development
 

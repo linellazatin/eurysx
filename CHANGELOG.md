@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.2.0] - Anthropic aggregate-cost imports
+
+### Added
+
+- Sanitized Anthropic Usage & Cost report fixtures pinning the aggregate import contract (provisional, documentation-derived until a live response is verified).
+- Manual chapter documenting the provider-reported aggregate contract, freshness limits, and exclusions.
+- Normalized aggregate import row model and the Anthropic usage report reader; imported rows are never usage entries and are never priced.
+- Anthropic cost report reader with exact cents-to-USD conversion, one import source per declared glob, duplicate-bucket conflict counting, and truncated-page disclosure.
+- Store schema version 2 with the `aggregate_imports` table and an accepting in-place migration from version 1.
+- `preferences.jsonc` `aggregate_imports` block with validation diagnostics; the shipped sample keeps every entry commented out.
+- `eurysx collect` ingests declared aggregate imports with fingerprint skipping, last-good retention, and per-entry status lines.
+- Provider-reported aggregate analysis lane with by-date and by-model rollups, per-source freshness, and scope, staleness, overlap, and double-count warnings.
+- Terminal `PROVIDER-REPORTED AGGREGATES` block and JSON contract version 2 with the additive `aggregate_imports` lane and an explicit empty shape.
+- CSV, Markdown, and HTML render the aggregate lane from the same analysis result; CSV gains a trailing `reported_cost_usd` column.
+- `doctor` reports declared aggregate imports: matched files, stored rows, newest complete bucket, collected state, last error, and retained-but-unconfigured sources.
+
+### Fixed
+
+- `report` no longer hides the provider-reported lane when the local selection holds no harness rows: an imports-only store prints `No local harness usage stored; reporting provider-reported aggregates only.` and renders the lane in every format, and HTML export no longer assumes a token leader exists.
+- `collect` ingests declared aggregate imports on a machine with no detected harness history instead of stopping at `No agents detected.`
+- Invalid `aggregate_imports` entries are now reported. The block was validated after preference warnings had already been flushed, so `aggregate import entry ignored: ...` never reached stderr and a mistyped entry looked accepted.
+
+### Tests
+
+- Fixture-shape guards for both Anthropic report kinds, reader parity for cents-to-USD, dedupe, completeness, and truncated pages.
+- Isolation proof that stored imports leave agent totals, known cost, coverage, pacing, comparisons, and the locked JSON baseline unchanged apart from the additive lane.
+- Store migration, atomic replacement, incremental skip, last-good retention, configuration validation, doctor state, and all five presenters.
+- Boundary and privacy guards: the reader package imports neither pricing, storage, nor presentation; imported rows are never usage entries; fixtures carry no identifiers or content fields.
+- Imports-only paths: the lane renders with no local agent stats in terminal, JSON, CSV, Markdown, and HTML, and `collect` ingests declared imports when no harness is detected.
+- `tests/live_test.py`: scripted live checks L1-L17 driving a real CLI process inside sandboxed `EURYSX_CONFIG_DIR`, `EURYSX_DATA_DIR`, `EURYSX_CACHE_DIR`, and `HOME`, with `--json`, `--only`, and `--old-tree` for agent invocation and cross-version comparison.
+
 ## [0.1.4] - Cost lanes and LiteLLM estimates
 
 ### Added

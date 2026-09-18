@@ -402,6 +402,8 @@ class PreferencesResolver:
 
     SUPPORTED_AGENTS = ("claude-code", "codex", "opencode", "pi")
     BILLING_MODES = {"metered", "subscription", "credit", "quota", "local", "unknown"}
+    # Kept as a literal so preference loading never imports the reader package.
+    IMPORT_TYPES = ("anthropic-usage-report", "anthropic-cost-report")
 
     def __init__(self, config_path: Optional[Path] = None):
         default_config_dir, _ = get_eurysx_dirs()
@@ -431,6 +433,37 @@ class PreferencesResolver:
         for agent in self.SUPPORTED_AGENTS:
             if agent not in agents:
                 self._warn(f"preferences missing {agent}; using unknown defaults")
+
+    def aggregate_imports(self):
+        """Validated provider aggregate import entries; invalid ones become warnings.
+
+        These entries point at report files the user saved themselves. They are neither a
+        price source nor billing policy, so they never reach price resolution.
+        """
+        block = self.config.get("aggregate_imports", []) if isinstance(self.config, dict) else []
+        if not block:
+            return []
+        if not isinstance(block, list):
+            self._warn("aggregate import entry ignored: aggregate_imports must be an array")
+            return []
+        entries = []
+        for item in block:
+            if not isinstance(item, dict):
+                self._warn("aggregate import entry ignored: each entry must be an object")
+                continue
+            kind = item.get("type")
+            if kind not in self.IMPORT_TYPES:
+                self._warn(f"aggregate import entry ignored: unsupported type {kind}")
+                continue
+            path, scope = item.get("path"), item.get("scope")
+            if not isinstance(path, str) or not path.strip():
+                self._warn(f"aggregate import entry ignored: {kind} requires a non-empty path")
+                continue
+            if not isinstance(scope, str) or not scope.strip():
+                self._warn(f"aggregate import entry ignored: {kind} requires a non-empty scope")
+                continue
+            entries.append({"type": kind, "path": path.strip(), "scope": scope.strip()})
+        return entries
 
     def budget_for(self, agent: str, provider: Optional[str] = None):
         """Return a validated exact-route budget, if configured."""

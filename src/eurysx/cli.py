@@ -9,14 +9,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
+from . import store as store_module
 from .analysis import UsageAnalyzer
 from .collectors import PARSER_VERSIONS, collect_sources, detect_agents
+from .imports import entry_files, enumerate_sources
 from .models import AnalysisReport, UsageEntry
 from .paths import get_eurysx_data_dir
 from .pricing import PreferencesResolver, PricingResolver, apply_pricing
 from .render import (
-    Colors, build_csv_report, build_html_reports, build_json_report, build_markdown_report, print_agent_header,
-    print_single_agent_report, print_summary_comparison,
+    Colors, build_csv_report, build_html_reports, build_json_report, build_markdown_report,
+    print_agent_header, print_aggregate_imports, print_single_agent_report, print_summary_comparison,
 )
 from .store import UsageStore
 
@@ -212,12 +214,16 @@ def _warn_store_quality(store):
 
     Neither warning mutates the store: retention is deliberate (Act II Phase 3),
     and deleting events on an absent harness directory would destroy history.
-    `doctor` (Act III Phase 5) owns the per-source detail view.
+    `doctor` (Act III Phase 5) owns the per-source detail view. Imported aggregate
+    sources are skipped here: their `source_key` is a declared glob, not one file, so
+    `_warn_import_reachability` owns that diagnostic.
     """
     stale = {}
     vanished = {}
     for row in store.all_sources():
         agent = row["agent"]
+        if agent == store_module.AGENT_AGGREGATE_IMPORTS:
+            continue
         current = PARSER_VERSIONS.get(agent)
         if current and row["parser_version"] != current:
             stale[(agent, row["parser_version"], current)] = \
@@ -241,6 +247,45 @@ def _warn_store_quality(store):
         )
 
 
+def _refresh_imports(store, entries):
+    """Ingest declared provider aggregate reports; unchanged globs are skipped."""
+    lines, warnings = [], []
+    for entry in entries:
+        for source in enumerate_sources(entry, warnings):
+            state = store.source_state(source.key)
+            if (
+                state
+                and state["fingerprint"] == source.fingerprint
+                and state["parser_version"] == source.parser_version
+            ):
+                lines.append(f"  {entry['scope']}: unchanged aggregate import.")
+                continue
+            try:
+                rows = source.parse()
+            except Exception as error:
+                store.record_failure(source, store_module.AGENT_AGGREGATE_IMPORTS, error)
+                lines.append(f"  {entry['scope']}: aggregate import failed ({error}); "
+                             "last-good rows retained.")
+                continue
+            store.replace_import_source(source.key, source.fingerprint, rows,
+                                        parser_version=source.parser_version)
+            lines.append(f"  {entry['scope']}: imported {len(rows)} aggregate row(s).")
+    for message in warnings:
+        print(f"Warning: {message}", file=sys.stderr)
+    return lines
+
+
+def _warn_import_reachability(store, entries):
+    """A declared glob that matches nothing keeps its stored rows and says so."""
+    for entry in entries:
+        if not entry_files(entry):
+            print(
+                f"Warning: aggregate import for {entry['scope']} has no matching files at "
+                f"{entry['path']}; stored rows are retained as last-good data.",
+                file=sys.stderr,
+            )
+
+
 def _print_doctor(store, resolver, preferences):
     """Print read-only local diagnostic state without parsing sources."""
     detected = set(detect_agents())
@@ -255,6 +300,14 @@ def _print_doctor(store, resolver, preferences):
         except Exception as error:
             descriptors[agent] = {}
             print(f"Warning: could not inspect {agent} sources: {error}")
+    import_entries = preferences.aggregate_imports()
+    try:
+        descriptors[store_module.AGENT_AGGREGATE_IMPORTS] = {
+            source.key: source for entry in import_entries
+            for source in enumerate_sources(entry)}
+    except Exception as error:
+        descriptors[store_module.AGENT_AGGREGATE_IMPORTS] = {}
+        print(f"Warning: could not inspect aggregate import sources: {error}")
     print("\nSTORED SOURCE HEALTH")
     states = store.source_states()
     if not states:
@@ -282,6 +335,28 @@ def _print_doctor(store, resolver, preferences):
     print(f"config: {preferences.config_path}")
     for warning in preferences.warnings:
         print(f"Warning: {warning}")
+    print("\nAGGREGATE IMPORTS")
+    if not import_entries:
+        print("No aggregate imports configured.")
+    states = {row["source_key"]: row for row in store.import_source_states()}
+    declared = set()
+    for entry in import_entries:
+        files = entry_files(entry)
+        key = f"{entry['type']}:{Path(entry['path']).expanduser()}"
+        declared.add(key)
+        state = states.get(key)
+        stored = store.imported_aggregates()
+        matched = {str(path) for path in files}
+        rows = [row for row in stored if row["source_file"] in matched]
+        newest = max((row["date"] for row in rows if row["complete"]), default="none")
+        print(f"{entry['scope']} ({entry['type']}): {len(files)} file(s) matched; "
+              f"rows: {len(rows)}; newest complete bucket: {newest}; "
+              + (f"collected {state['collected_at']}" if state else "not collected"))
+        if state and state["last_error"]:
+            print(f"  last error: {state['last_error']}")
+    for key, state in sorted(states.items()):
+        if key not in declared:
+            print(f"retained import no longer configured: {state['agent']} {key}")
 
 
 def _refresh_store(store, agents):
@@ -327,6 +402,9 @@ def main(argv=None):
     resolver = PricingResolver(force_refresh=args.refresh_pricing)
     preferences = PreferencesResolver()
     store = UsageStore(get_eurysx_data_dir() / "eurysx.db")
+    # Validate declared imports before flushing preference warnings: the check is lazy, so
+    # an entry-ignored warning would otherwise be registered after the print loop and lost.
+    import_entries = preferences.aggregate_imports()
     for warning in resolver.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     for warning in preferences.warnings:
@@ -340,8 +418,13 @@ def main(argv=None):
         read_agents = None
         agents_to_analyze = None if args.command == "report" else detect_agents()
         if args.command != "report" and not agents_to_analyze:
-            print("No agents detected. Check if any agents are installed.")
-            return
+            if not import_entries:
+                print("No agents detected. Check if any agents are installed.")
+                return
+            # Provider-reported imports are harness-independent: an imports-only machine still
+            # has to reach _refresh_imports, so an empty agent list flows through the pipeline.
+            agents_to_analyze = []
+            print("No local harnesses detected; refreshing declared aggregate imports only.")
     else:
         agents_to_analyze = args.agent
         read_agents = args.agent
@@ -350,8 +433,13 @@ def main(argv=None):
     if args.command == "report":
         print("Reporting stored agents without collecting.")
     else:
-        print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
+        if agents_to_analyze:
+            print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
         _refresh_store(store, agents_to_analyze)
+        if import_entries:
+            print("Refreshing declared aggregate imports...")
+            for line in _refresh_imports(store, import_entries):
+                print(line)
         if args.command == "collect":
             return
     failures = {}
@@ -364,6 +452,7 @@ def main(argv=None):
             file=sys.stderr,
         )
     _warn_store_quality(store)
+    _warn_import_reachability(store, import_entries)
     store_agents = store.distinct_agents(read_agents)
     for record in store.events(read_agents, start_date, end_date,
                                models=args.model, providers=args.provider):
@@ -395,11 +484,17 @@ def main(argv=None):
     else:
         for agent in store_agents:
             agent_data.setdefault(agent, [])
-    if not agent_data:
+    # The aggregate lane is read before the empty-local-usage short circuit: a store holding
+    # only provider-reported rows has nothing local to report but must still render the lane.
+    imported_rows = store.imported_aggregates(start_date, end_date, models=args.model)
+    if not agent_data and not imported_rows:
         print("No stored usage data found. Run eurysx collect first.")
         return
     if args.command == "report":
-        print(f"Reporting stored agents: {', '.join(agent_data)}")
+        if agent_data:
+            print(f"Reporting stored agents: {', '.join(agent_data)}")
+        else:
+            print("No local harness usage stored; reporting provider-reported aggregates only.")
     for usages in agent_data.values():
         apply_pricing(usages, resolver, preferences)
 
@@ -413,6 +508,19 @@ def main(argv=None):
         "config_file": str(preferences.config_path),
         "warnings": preferences.warnings,
     }
+
+    # Provider-reported aggregates are a separate lane: they come from their own table,
+    # are never priced, and are never added to any figure above.
+    inactive_filters = [name for name, values in (("provider", args.provider),
+                                                 ("billing-mode", args.billing_mode))
+                        if values]
+    report.aggregate_imports = UsageAnalyzer.summarize_imports(
+        imported_rows,
+        aggregates_present=store.has_aggregate_events(["claude-code"]),
+        today=end_date, active_filters=inactive_filters,
+    )
+    for warning in report.aggregate_imports.warnings:
+        print(warning, file=sys.stderr)
 
     for agent, usages in agent_data.items():
         print(f"\nAnalyzing {agent}...")
@@ -448,6 +556,8 @@ def main(argv=None):
                 stats, prev_stats, period_label, prev_label,
             )
         print_single_agent_report(report, agent)
+
+    print_aggregate_imports(report)
 
     if len(agent_data) > 1:
         print_summary_comparison(report)
