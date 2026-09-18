@@ -223,6 +223,14 @@ Shipped in v0.1.5 as a file-only import lane: no API client, no credential reads
 
 Non-goal: automatically reading Anthropic credentials or allocating one organization aggregate across local sessions.
 
+#### Phase 11 live verification (installed 0.1.5, 2026-09-18)
+
+- [x] Fixed while verifying live: `report` skipped the aggregate lane whenever the local selection held no harness rows, and HTML export crashed on a store with no token leader. An imports-only store now renders the lane in every format.
+- [x] Fixed while verifying live: `collect` stopped at `No agents detected.` on a machine with no harness history, so declared imports were never ingested. Imports now refresh regardless of harness presence.
+- Not defects, recorded so they are not re-filed: `--format` is never inferred from the `--output` filename, and a `preferences.jsonc` without an `agents` object is rejected with `preferences ignored: agents must be an object` while `aggregate_imports` still loads. Both predate Phase 11; the shipped sample always writes `agents`.
+  - [ ] Decide later whether `--output` should infer `--format` from the extension (today `--output report.csv` without `--format csv` silently writes JSON and exits 0).
+  - [ ] Decide later whether a preferences file missing `agents` should keep discarding the whole file, now that the same file can carry an `aggregate_imports` block.
+
 #### Deferred Phase 11 follow-ups
 
 - [ ] Support Anthropic Usage & Cost and/or Claude Code Analytics report shapes only after their fields and scope are verified against fixtures. Both Usage & Cost readers shipped; their `REPORT_KEYS`/`COST_KEYS` maps and `tests/fixtures/anthropic_usage/` remain documentation-derived. Blocked on organization report access with no timeline — reader logic is key-name independent, so verifying a live saved response should only change the maps and fixtures.

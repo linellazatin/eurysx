@@ -312,6 +312,12 @@ A usage row never carries cost and a cost row never carries tokens: the two lane
 combined into one figure. Reported USD totals sum only rows with a non-null `cost_usd`, and
 a usage-only import renders its cost total as `N/A`, never `$0.00`.
 
+The lane does not depend on local harness data. A store holding only imported rows still
+reports it, after `No local harness usage stored; reporting provider-reported aggregates
+only.`, and `collect` ingests declared imports even when no harness is detected on the
+machine, printing `No local harnesses detected; refreshing declared aggregate imports
+only.` instead of stopping at `No agents detected.`
+
 ### Freshness, limits, and required user action
 
 The user must save the report files themselves and declare their paths (see

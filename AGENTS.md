@@ -61,8 +61,10 @@ Run these against the installed CLI (`eurysx`, not `PYTHONPATH=src`) after any c
 | L12 | newest complete bucket older than three days | `eurysx report --days 30` | `aggregate import for <scope> is stale; newest complete bucket is <date> from <file>.` once per source |
 | L13 | a pre-0.1.5 store copy | point `EURYSX_DATA_DIR` at a v1 `eurysx.db`, run `report`, and compare JSON with the same run under 0.1.4 | `pragma user_version` becomes 2, `events` count unchanged, and every JSON key except `schema_version` and `aggregate_imports` is byte-identical |
 | L14 | CLI contract | `--to` without `--from`, `--format` without `--output`, an unknown flag | exit `2` for all three; exit `0` for normal reports; an unknown `--output` extension silently writes JSON |
+| L15 | store holds imported rows and no local events | `eurysx report --days 30`, then the same with `--format html` | renders `No local harness usage stored; reporting provider-reported aggregates only.` plus the lane, writes `index.html` with no per-agent page, and exits 0 (HTML must not assume a token leader exists) |
+| L16 | no harness history on the machine, imports declared | `eurysx collect` | prints `No local harnesses detected; refreshing declared aggregate imports only.` and ingests the declared reports instead of stopping at `No agents detected.` |
 
-Known gap (2026-09-18): a store holding only imported aggregates prints `No stored usage data found. Run eurysx collect first.` and skips the lane, because `report` returns early when the local selection has no agents; `doctor` still lists the imports.
+Two behaviors are intentional, not defects, and predate the aggregate lane: `--format` is never inferred from the `--output` filename, and a `preferences.jsonc` without an `agents` object is ignored with a warning.
 
 ## Key files
 

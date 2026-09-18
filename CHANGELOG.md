@@ -18,12 +18,18 @@ Date: 2026-09-18
 - CSV, Markdown, and HTML render the aggregate lane from the same analysis result; CSV gains a trailing `reported_cost_usd` column.
 - `doctor` reports declared aggregate imports: matched files, stored rows, newest complete bucket, collected state, last error, and retained-but-unconfigured sources.
 
+### Fixed
+
+- `report` no longer hides the provider-reported lane when the local selection holds no harness rows: an imports-only store prints `No local harness usage stored; reporting provider-reported aggregates only.` and renders the lane in every format, and HTML export no longer assumes a token leader exists.
+- `collect` ingests declared aggregate imports on a machine with no detected harness history instead of stopping at `No agents detected.`
+
 ### Tests
 
 - Fixture-shape guards for both Anthropic report kinds, reader parity for cents-to-USD, dedupe, completeness, and truncated pages.
 - Isolation proof that stored imports leave agent totals, known cost, coverage, pacing, comparisons, and the locked JSON baseline unchanged apart from the additive lane.
 - Store migration, atomic replacement, incremental skip, last-good retention, configuration validation, doctor state, and all five presenters.
 - Boundary and privacy guards: the reader package imports neither pricing, storage, nor presentation; imported rows are never usage entries; fixtures carry no identifiers or content fields.
+- Imports-only paths: the lane renders with no local agent stats in terminal, JSON, CSV, Markdown, and HTML, and `collect` ingests declared imports when no harness is detected.
 
 ## [0.1.4] - Cost lanes and LiteLLM estimates
 
