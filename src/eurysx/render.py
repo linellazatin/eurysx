@@ -765,11 +765,16 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
     overview_rows.append(("COMBINED TOTAL", f"{combined['tokens']:,}", f"{combined['requests']:,}",
                           f"{combined['turns']:,}", f"{combined['tools']:,}", combined_cost, combined_daily))
     leaders = _comparison_leaders(report)
-    leading_agent, leading_stats = max(agents, key=lambda item: item[1].total_tokens)
+    if agents:
+        leading_agent, leading_stats = max(agents, key=lambda item: item[1].total_tokens)
+        most_usage = (f'<strong>{text(AGENT_NAMES.get(leading_agent, leading_agent))}</strong>'
+                      f'<span>{leading_stats.total_tokens:,} tokens</span>')
+    else:
+        most_usage = '<strong>N/A</strong><span>No local harness usage</span>'
     insights = (
         '<p class="eyebrow">At a glance</p><h1>Usage overview</h1>'
         f'<p>Period: {text(report.period_label)}</p><div class="summary-grid">'
-        f'<div class="insight"><span>Most usage</span><strong>{text(AGENT_NAMES.get(leading_agent, leading_agent))}</strong><span>{leading_stats.total_tokens:,} tokens</span></div>'
+        f'<div class="insight"><span>Most usage</span>{most_usage}</div>'
         f'<div class="insight"><span>Known cost</span><strong>{text(combined_cost)}</strong><span>Across all analyzed harnesses</span></div>'
         f'<div class="insight"><span>Harnesses analyzed</span><strong>{len(agents)}</strong><span>Local sources only</span></div></div>'
     )

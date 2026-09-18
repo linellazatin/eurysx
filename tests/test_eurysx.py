@@ -651,6 +651,65 @@ class AggregateImportCollectionTests(unittest.TestCase):
         self.assertIn("no matching files", stderr)
         self.assertNotIn("no longer exist on disk", stderr)
 
+    def test_collect_ingests_imports_without_any_local_harness_history(self):
+        """Declared imports must ingest even when no harness is detected."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            entry = self._entry(root)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["eurysx", "collect"]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root), \
+                    patch.object(app, "detect_agents", return_value=[]), \
+                    patch.object(app, "PreferencesResolver",
+                                 return_value=_preferences_with_imports(root, entry)), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                app.main()
+            rows = UsageStore(root / "eurysx.db").imported_aggregates()
+        self.assertIn("No local harnesses detected", stdout.getvalue())
+        self.assertNotIn("No agents detected", stdout.getvalue())
+        self.assertTrue(rows)
+
+    def test_imports_only_store_renders_the_lane(self):
+        """A store with provider-reported rows and no local harness rows still reports."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["eurysx", "report", "--from", "2026-09-01",
+                                            "--to", "2026-09-03"]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root), \
+                    patch.object(app, "collect_sources", side_effect=AssertionError), \
+                    patch.object(app, "PreferencesResolver",
+                                 return_value=_preferences_with_imports(root, entry)), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                app.main()
+        out = stdout.getvalue()
+        self.assertNotIn("No stored usage data found", out)
+        self.assertIn("PROVIDER-REPORTED AGGREGATES", out)
+        self.assertIn("Imported buckets:", out)
+        self.assertIn("No local harness usage stored", out)
+
+    def test_imports_only_store_json_report_has_empty_local_lanes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = UsageStore(root / "eurysx.db")
+            entry = self._entry(root)
+            app._refresh_imports(store, [entry])
+            output = root / "report.json"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["eurysx", "report", "--from", "2026-09-01",
+                                            "--to", "2026-09-03", "--output", str(output)]), \
+                    patch.object(app, "get_eurysx_data_dir", return_value=root), \
+                    patch.object(app, "PreferencesResolver",
+                                 return_value=_preferences_with_imports(root, entry)), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                app.main()
+            payload = json.loads(output.read_text())
+        self.assertEqual(payload["agent_stats"], {})
+        self.assertGreater(payload["aggregate_imports"]["totals"]["rows"], 0)
+
     def test_report_command_reads_stored_imports_without_importing(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -670,7 +729,8 @@ class AggregateImportCollectionTests(unittest.TestCase):
                                  return_value=_preferences_with_imports(root, entry)), \
                     redirect_stdout(stdout), redirect_stderr(stderr):
                 app.main()
-        self.assertNotIn("aggregate", stdout.getvalue().lower())
+        self.assertIn("PROVIDER-REPORTED AGGREGATES", stdout.getvalue())
+        self.assertIn("no matching files", stderr.getvalue())
 
 
 class UsageStoreTests(unittest.TestCase):
@@ -2714,6 +2774,16 @@ class AggregateImportExportTests(unittest.TestCase):
         for name, page in pages.items():
             if name != "index.html":
                 self.assertNotIn("Provider-Reported Aggregates", page)
+
+    def test_html_renders_the_lane_with_no_local_agent_stats(self):
+        """An imports-only report has no harness pages and no token leader."""
+        report = self._report()
+        report.agent_stats.clear()
+        pages = app.build_html_reports(report)
+        self.assertIn("Provider-Reported Aggregates", pages["index.html"])
+        self.assertEqual(sorted(name for name in pages if name != "index.html"), [])
+        self.assertIn("reported_cost_usd", app.build_csv_report(report))
+        self.assertIn("## Provider-Reported Aggregates", app.build_markdown_report(report))
 
     def test_exports_omit_the_lane_when_nothing_is_imported(self):
         empty = self._report(rows=False)

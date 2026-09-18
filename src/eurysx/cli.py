@@ -415,8 +415,13 @@ def main(argv=None):
         read_agents = None
         agents_to_analyze = None if args.command == "report" else detect_agents()
         if args.command != "report" and not agents_to_analyze:
-            print("No agents detected. Check if any agents are installed.")
-            return
+            if not preferences.aggregate_imports():
+                print("No agents detected. Check if any agents are installed.")
+                return
+            # Provider-reported imports are harness-independent: an imports-only machine still
+            # has to reach _refresh_imports, so an empty agent list flows through the pipeline.
+            agents_to_analyze = []
+            print("No local harnesses detected; refreshing declared aggregate imports only.")
     else:
         agents_to_analyze = args.agent
         read_agents = args.agent
@@ -425,7 +430,8 @@ def main(argv=None):
     if args.command == "report":
         print("Reporting stored agents without collecting.")
     else:
-        print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
+        if agents_to_analyze:
+            print(f"Analyzing agents: {', '.join(agents_to_analyze)}")
         _refresh_store(store, agents_to_analyze)
         import_entries = preferences.aggregate_imports()
         if import_entries:
@@ -476,11 +482,17 @@ def main(argv=None):
     else:
         for agent in store_agents:
             agent_data.setdefault(agent, [])
-    if not agent_data:
+    # The aggregate lane is read before the empty-local-usage short circuit: a store holding
+    # only provider-reported rows has nothing local to report but must still render the lane.
+    imported_rows = store.imported_aggregates(start_date, end_date, models=args.model)
+    if not agent_data and not imported_rows:
         print("No stored usage data found. Run eurysx collect first.")
         return
     if args.command == "report":
-        print(f"Reporting stored agents: {', '.join(agent_data)}")
+        if agent_data:
+            print(f"Reporting stored agents: {', '.join(agent_data)}")
+        else:
+            print("No local harness usage stored; reporting provider-reported aggregates only.")
     for usages in agent_data.values():
         apply_pricing(usages, resolver, preferences)
 
@@ -501,7 +513,7 @@ def main(argv=None):
                                                  ("billing-mode", args.billing_mode))
                         if values]
     report.aggregate_imports = UsageAnalyzer.summarize_imports(
-        store.imported_aggregates(start_date, end_date, models=args.model),
+        imported_rows,
         aggregates_present=store.has_aggregate_events(["claude-code"]),
         today=end_date, active_filters=inactive_filters,
     )
