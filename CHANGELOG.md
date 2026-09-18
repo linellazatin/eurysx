@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.5] - Anthropic aggregate-cost imports
+
+Date: 2026-09-18
+
+### Added
+
+- Sanitized Anthropic Usage & Cost report fixtures pinning the aggregate import contract (provisional, documentation-derived until a live response is verified).
+- Manual chapter documenting the provider-reported aggregate contract, freshness limits, and exclusions.
+- Normalized aggregate import row model and the Anthropic usage report reader; imported rows are never usage entries and are never priced.
+- Anthropic cost report reader with exact cents-to-USD conversion, one import source per declared glob, duplicate-bucket conflict counting, and truncated-page disclosure.
+- Store schema version 2 with the `aggregate_imports` table and an accepting in-place migration from version 1.
+- `preferences.jsonc` `aggregate_imports` block with validation diagnostics; the shipped sample keeps every entry commented out.
+- `eurysx collect` ingests declared aggregate imports with fingerprint skipping, last-good retention, and per-entry status lines.
+- Provider-reported aggregate analysis lane with by-date and by-model rollups, per-source freshness, and scope, staleness, overlap, and double-count warnings.
+- Terminal `PROVIDER-REPORTED AGGREGATES` block and JSON contract version 2 with the additive `aggregate_imports` lane and an explicit empty shape.
+- CSV, Markdown, and HTML render the aggregate lane from the same analysis result; CSV gains a trailing `reported_cost_usd` column.
+- `doctor` reports declared aggregate imports: matched files, stored rows, newest complete bucket, collected state, last error, and retained-but-unconfigured sources.
+
+### Tests
+
+- Fixture-shape guards for both Anthropic report kinds, reader parity for cents-to-USD, dedupe, completeness, and truncated pages.
+- Isolation proof that stored imports leave agent totals, known cost, coverage, pacing, comparisons, and the locked JSON baseline unchanged apart from the additive lane.
+- Store migration, atomic replacement, incremental skip, last-good retention, configuration validation, doctor state, and all five presenters.
+- Boundary and privacy guards: the reader package imports neither pricing, storage, nor presentation; imported rows are never usage entries; fixtures carry no identifiers or content fields.
+
 ## [0.1.4] - Cost lanes and LiteLLM estimates
 
 ### Added
