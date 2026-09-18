@@ -2,6 +2,7 @@
 
 <div align="center">
 
+[![gh release](https://img.shields.io/github/v/release/linellazatin/eurysx?label=release&logo=github&color=ffffe0)](https://github.com/linellazatin/eurysx)
 [![eurysx version](https://img.shields.io/pypi/v/eurysx?logo=pypi&color=blue)](https://pypi.org/project/eurysx)
 
 </div>
