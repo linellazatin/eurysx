@@ -10,7 +10,7 @@ Local-first usage observability for Claude Code, OpenCode, Pi, and Codex.
 
 Eurysx reads local agent history and reports tokens, requests, turns, tool calls, estimated or recorded cost, and pricing provenance. Provider-reported organization aggregates can be imported from report files you saved yourself, shown as a separate lane that is never mixed into local cost. Eurysx makes no API calls and does not upload usage data or persist prompts, responses, file contents, tool arguments, or tool results.
 
-> Eurysx v0.1.5 is a local CLI, not a hosted service.
+> Eurysx v0.2.0 is a local CLI, not a hosted service.
 
 ## What the name means
 

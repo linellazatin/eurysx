@@ -3467,7 +3467,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.1.5")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.2.0")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

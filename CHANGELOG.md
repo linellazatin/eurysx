@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.5] - Anthropic aggregate-cost imports
+## [0.2.0] - Anthropic aggregate-cost imports
 
 ### Added
 

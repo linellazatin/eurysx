@@ -207,11 +207,11 @@ Allow users to inspect a useful retail-equivalent estimate without presenting it
 
 Non-goal: dividing subscription fees by tokens or inferring a per-token subscription price.
 
-### Phase 11: Anthropic aggregate-cost imports (v0.1.5)
+### Phase 11: Anthropic aggregate-cost imports (v0.2.0)
 
 Use Anthropic's official organization-level usage and cost reporting where the user has access, without pretending aggregate data is session-level data.
 
-Shipped in v0.1.5 as a file-only import lane: no API client, no credential reads, and a provider-reported aggregate lane that is structurally invisible to `store.events()`. Both Usage & Cost readers landed on documentation-derived fixtures; live-shape verification, Console CSV, and Claude Code Analytics moved to the deferred block below because organization report access is unavailable here.
+Shipped in v0.2.0 as a file-only import lane: no API client, no credential reads, and a provider-reported aggregate lane that is structurally invisible to `store.events()`. Both Usage & Cost readers landed on documentation-derived fixtures; live-shape verification, Console CSV, and Claude Code Analytics moved to the deferred block below because organization report access is unavailable here.
 
 - [x] Define a provider-reported aggregate import contract for JSON/CSV or a deliberately explicit API response input. (JSON saved responses only; Console CSV deferred below.)
 - [x] Record model, date, actor/account scope, token dimensions, estimated or reported USD cost, source, and freshness metadata without storing credentials or conversation content. (Account and workspace scope; per-user actor scope arrives with the Analytics reader.)
@@ -223,7 +223,7 @@ Shipped in v0.1.5 as a file-only import lane: no API client, no credential reads
 
 Non-goal: automatically reading Anthropic credentials or allocating one organization aggregate across local sessions.
 
-#### Phase 11 live verification (installed 0.1.5, 2026-09-18)
+#### Phase 11 live verification (installed 0.1.5 dev build, 2026-09-18)
 
 - [x] Fixed while verifying live: `report` skipped the aggregate lane whenever the local selection held no harness rows, and HTML export crashed on a store with no token leader. An imports-only store now renders the lane in every format.
 - [x] Fixed while verifying live: `collect` stopped at `No agents detected.` on a machine with no harness history, so declared imports were never ingested. Imports now refresh regardless of harness presence.
@@ -240,7 +240,7 @@ Non-goal: automatically reading Anthropic credentials or allocating one organiza
 - [ ] Add the Claude Code Analytics reader for per-user/actor scope and `estimated_cost`, with its own verified fixtures.
 - [ ] Decide later whether an import should ever reconcile with local stats; the current contract discloses overlap and merges nothing.
 
-### Phase 12: Account and workspace billing imports (v0.1.6)
+### Phase 12: Account and workspace billing imports (v0.2.1)
 
 Add account-specific provider billing data only where the provider exposes a usable report and the user explicitly supplies it.
 
