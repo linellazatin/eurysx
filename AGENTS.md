@@ -41,6 +41,29 @@ Parser changes must bump the matching collector version: Claude Code 1, Codex 2,
 
 `billing_mode` is set during pricing and may become `metered` on recorded-cost conflict; apply `--billing-mode` after pricing, not in SQL. Claude Code stats are aggregate-only, excluded from selected ranges, and stamped with date-only `lastComputedDate`. Keep JSON baseline shape stable, use explicit JSON `null` ratios, and keep `AGENT_STATS_KEYS` sorted.
 
+## Live smoke tests
+
+Run these against the installed CLI (`eurysx`, not `PYTHONPATH=src`) after any change to `imports/`, `store.py`, `cli.py`, or the presenters. Always point `EURYSX_CONFIG_DIR` and `EURYSX_DATA_DIR` at throwaway directories: the store is migrated in place on first write and there is no down-migration, and the repository's own `config/` and `data/` must not absorb test rows.
+
+| ID | Condition | Command | Check |
+| --- | --- | --- | --- |
+| L1 | real store, no imports declared | `eurysx --agent all --days 30` | exits 0; no `PROVIDER-REPORTED AGGREGATES` block; the only "aggregate" text is the pre-existing Claude Code period-exclusion warning |
+| L2 | no imports declared | `eurysx doctor` | `AGGREGATE IMPORTS` prints `No aggregate imports configured.` |
+| L3 | report glob declared in `preferences.jsonc` | `eurysx collect --agent pi` | `Refreshing declared aggregate imports...` then one `imported N aggregate row(s).` per entry |
+| L4 | files untouched since L3 | repeat L3 | every entry reports `unchanged aggregate import.` (fingerprint skip, no re-parse) |
+| L5 | rows stored | `eurysx report --days 30` | lane tokens and `Reported cost (USD)` equal `select sum(...), sum(cost_usd) from aggregate_imports`; local known cost, coverage, and pacing are unchanged |
+| L6 | lane plus local filters | `eurysx report --agent <other> --days 30`, `--model <x>`, `--billing-mode subscription` | the lane keeps its own numbers and prints `Note: --billing-mode filters local usage only; this lane is unfiltered.`; `--model` narrows the lane by design |
+| L7 | all exporters | `eurysx report --days 30 --format json\|csv\|markdown\|html --output <path>` | JSON has `schema_version: 2` and an always-present `aggregate_imports` whose cost is `null`, never `0`; CSV has trailing `reported_cost_usd` with `agent=reported_aggregate` rows and `N/A` local cost; Markdown has `## Provider-Reported Aggregates`; HTML shows the lane in `index.html` only, never a per-agent page. `--format` is not inferred from the filename |
+| L8 | a matched file is corrupted | `printf '{oops' > <file>`, then L3, then restore | `aggregate import failed (...); last-good rows retained.`, stored row count unchanged, `sources.last_error` set, `doctor` prints `last error:` with `collected` frozen at the last good time |
+| L9 | glob matches no files | declare a nonexistent pattern, then report and `eurysx doctor` | report warns `has no matching files ...; stored rows are retained as last-good data.`; doctor shows `0 file(s) matched; ...; not collected`; other entries still ingest |
+| L10 | invalid entries | declare `"type": "openai-cost-report"` and `"path": 5` | each is dropped with `aggregate import entry ignored: ...`, exit stays 0, valid entries still run |
+| L11 | one glob matches two files holding the same bucket | collect | `contains N duplicate bucket(s) with disagreeing values; the first file's value was kept.` and the stored count stays deduped; the warning appears only when the fingerprint changes |
+| L12 | newest complete bucket older than three days | `eurysx report --days 30` | `aggregate import for <scope> is stale; newest complete bucket is <date> from <file>.` once per source |
+| L13 | a pre-0.1.5 store copy | point `EURYSX_DATA_DIR` at a v1 `eurysx.db`, run `report`, and compare JSON with the same run under 0.1.4 | `pragma user_version` becomes 2, `events` count unchanged, and every JSON key except `schema_version` and `aggregate_imports` is byte-identical |
+| L14 | CLI contract | `--to` without `--from`, `--format` without `--output`, an unknown flag | exit `2` for all three; exit `0` for normal reports; an unknown `--output` extension silently writes JSON |
+
+Known gap (2026-09-18): a store holding only imported aggregates prints `No stored usage data found. Run eurysx collect first.` and skips the lane, because `report` returns early when the local selection has no agents; `doctor` still lists the imports.
+
 ## Key files
 
 - `tests/test_eurysx.py`: single unittest suite and CLI/output baselines.
