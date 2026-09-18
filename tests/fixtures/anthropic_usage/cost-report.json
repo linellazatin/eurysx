@@ -1,0 +1,63 @@
+{
+  "data": [
+    {
+      "object": "cost_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-01T00:00:00Z",
+        "end_date": "2026-09-02T00:00:00Z"
+      },
+      "results": [
+        {
+          "type": "token_usage",
+          "description": {
+            "model": "claude-sonnet-4-5",
+            "inference_geo": "global"
+          },
+          "workspace_id": "ws-1",
+          "cost": "1250.5"
+        },
+        {
+          "type": "web_search",
+          "description": {
+            "inference_geo": "global"
+          },
+          "workspace_id": null,
+          "cost": "10"
+        }
+      ]
+    },
+    {
+      "object": "cost_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-02T00:00:00Z",
+        "end_date": "2026-09-03T00:00:00Z"
+      },
+      "results": [
+        {
+          "type": "token_usage",
+          "description": {
+            "model": "claude-sonnet-4-5",
+            "inference_geo": "us"
+          },
+          "workspace_id": "ws-1",
+          "cost": "3480"
+        }
+      ]
+    },
+    {
+      "object": "cost_report_bucket",
+      "time_range": {
+        "start_date": "2026-09-03T00:00:00Z",
+        "end_date": "2026-09-04T00:00:00Z"
+      },
+      "results": [
+        {
+          "type": "token_usage",
+          "cost": "0.75"
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "next_page": null
+}
