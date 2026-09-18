@@ -14,6 +14,7 @@ data/
 # Generated reports and package artifacts
 reports/
 usage-analysis-report*/
+super*/
 build/
 dist/
 *.egg-info/
