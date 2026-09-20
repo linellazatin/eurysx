@@ -94,6 +94,49 @@ def _comparison_leaders(report: AnalysisReport) -> Dict:
     }
 
 
+def _provider_model_rows(breakdown: Dict):
+    return [
+        (provider, model, data)
+        for provider, models in sorted(breakdown.items())
+        for model, data in sorted(models.items(), key=lambda item: (-item[1]["cost"], item[0]))
+    ]
+
+
+def _print_provider_models(title: str, breakdown: Dict):
+    print(f"\n{'=' * 80}")
+    print(title)
+    print('=' * 80)
+    _print_table(
+        ("Provider", "Model", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status", "Requests", "Turns", "Tool calls"),
+        [
+            (provider, model, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}",
+             _cost_display(data), _lane_display(data, "actual_cost"), _lane_display(data, "api_equivalent_estimate"), _cost_status(data),
+             f"{data['model_requests']:,}", f"{data['model_turns']:,}", f"{data['model_tool_calls']:,}")
+            for provider, model, data in _provider_model_rows(breakdown)
+        ],
+    )
+
+
+def _combined_provider_model_breakdown(report: AnalysisReport) -> Dict:
+    combined = {}
+    for stats in report.agent_stats.values():
+        for provider, model, data in _provider_model_rows(stats.provider_model_breakdown):
+            bucket = combined.setdefault(provider, {}).setdefault(model, {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0,
+                "actual_cost": None, "api_equivalent_estimate": None, "estimate_status_counts": {},
+                "cost_status_counts": {}, "model_requests": 0, "model_turns": 0, "model_tool_calls": 0,
+            })
+            for key in ("input", "output", "cache_read", "cache_write", "cost", "model_requests", "model_turns", "model_tool_calls"):
+                bucket[key] += data[key]
+            for key in ("actual_cost", "api_equivalent_estimate"):
+                if data[key] is not None:
+                    bucket[key] = (bucket[key] or 0.0) + data[key]
+            for key in ("estimate_status_counts", "cost_status_counts"):
+                for status, count in data[key].items():
+                    bucket[key][status] = bucket[key].get(status, 0) + count
+    return combined
+
+
 def _print_table(headers, rows):
     rows = [[str(value) for value in row] for row in rows]
     widths = [max([len(header), *(len(row[index]) for row in rows)]) for index, header in enumerate(headers)]
@@ -183,31 +226,8 @@ def print_single_agent_report(report: AnalysisReport, agent: str):
         ("API-equivalent estimate", f"${stats.api_equivalent_estimate:,.6f}" if stats.estimate_status_counts.get("estimated") else "N/A"),
     ))
     
-    # ===== BREAKDOWN BY MODEL SECTION =====
-    print(f"\n{color}{'=' * 80}{Colors.reset}")
-    print(f"{color}BREAKDOWN BY MODEL{Colors.reset}")
-    print(f"{color}{'=' * 80}{Colors.reset}")
-    
-    sorted_models = sorted(
-        stats.model_breakdown.items(),
-        key=lambda x: x[1]['cost'],
-        reverse=True
-    )
-    
-    _print_table(
-        ("Model", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status", "Requests", "Turns", "Tool calls"),
-        [
-            (
-                model_id,
-                f"{model_data['input'] + model_data['output'] + model_data['cache_read'] + model_data['cache_write']:,}",
-                _cost_display(model_data), _lane_display(model_data, "actual_cost"), _lane_display(model_data, "api_equivalent_estimate"), _cost_status(model_data),
-                f"{model_data['model_requests']:,}",
- f"{model_data['model_turns']:,}",
-                f"{model_data['model_tool_calls']:,}",
-            )
-            for model_id, model_data in sorted_models
-        ],
-    )
+    _print_provider_models("ALL MODELS BY PROVIDER", stats.provider_model_breakdown)
+    _print_provider_models("BREAKDOWN BY MODEL", stats.provider_model_breakdown)
 
     _print_grouped_section("BREAKDOWN BY SESSION", stats.session_breakdown, "session")
     _print_grouped_section("BREAKDOWN BY PROJECT", stats.project_breakdown, "project")
@@ -471,6 +491,7 @@ def print_summary_comparison(report: AnalysisReport):
     )
     print("=" * 105)
     leaders = _comparison_leaders(report)
+    _print_provider_models("ALL MODELS BY PROVIDER", _combined_provider_model_breakdown(report))
     print("\nTOKEN LEADERS")
     _print_table(
         ("Agent", "Provider", "Model", "Tokens"),
@@ -635,6 +656,7 @@ def _agent_stats_dict(stats: AgentStats) -> Dict:
         "sessions_count": stats.sessions_count,
         "unique_models": sorted(stats.unique_models),
         "model_breakdown": stats.model_breakdown,
+        "provider_model_breakdown": stats.provider_model_breakdown,
         "daily_activity": stats.daily_activity,
         "scope_warnings": stats.scope_warnings,
         "unresolved_routes": stats.unresolved_routes,
@@ -649,12 +671,20 @@ def build_csv_report(report: AnalysisReport) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(("agent", "provider", "observed_providers", "model", "billing_mode", "tokens", "known_cost_usd", "actual_recorded_cost_usd", "api_equivalent_estimate_usd", "entries", "model_requests", "model_turns", "model_tool_calls", "cost_status", "reported_cost_usd"))
     for agent, stats in sorted(report.agent_stats.items()):
+        for provider, model, data in _provider_model_rows(stats.provider_model_breakdown):
+            status = _cost_status(data)
+            cost = data["cost"] if status in ("known", "partial") else "N/A"
+            writer.writerow((agent, provider, "", model, "all_models", data["input"] + data["output"] + data["cache_read"] + data["cache_write"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", "", data["model_requests"], data["model_turns"], data["model_tool_calls"], status, ""))
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
             status = _cost_status(data)
             cost = data["cost"] if status in ("known", "partial") else "N/A"
             writer.writerow((agent, provider, ",".join(data.get("observed_providers", [])), model, mode[:-1], data["tokens"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", data["entries"], data["model_requests"], data["model_turns"], data["model_tool_calls"], status, ""))
+    for provider, model, data in _provider_model_rows(_combined_provider_model_breakdown(report)):
+        status = _cost_status(data)
+        cost = data["cost"] if status in ("known", "partial") else "N/A"
+        writer.writerow(("all", provider, "", model, "all_models", data["input"] + data["output"] + data["cache_read"] + data["cache_write"], cost, data["actual_cost"] if data["actual_cost"] is not None else "N/A", data["api_equivalent_estimate"] if data["api_equivalent_estimate"] is not None else "N/A", "", data["model_requests"], data["model_turns"], data["model_tool_calls"], status, ""))
     # One flat row per imported aggregate bucket: `agent` carries the lane marker and
     # `reported_cost_usd` carries provider-reported USD, so the two never share a column.
     for row in report.aggregate_imports.rows:
@@ -673,8 +703,13 @@ def build_markdown_report(report: AnalysisReport) -> str:
     lines += ["", "### Combined top 3", "", "| Rank | Provider | Model | Tokens |", "| ---: | --- | --- | ---: |"]
     for index, leader in enumerate(leaders["combined"], 1):
         lines.append(f"| {index} | {leader['provider']} | {leader['model']} | {leader['tokens']:,} |")
+    combined_models = _combined_provider_model_breakdown(report)
+    lines += ["", "## All models by provider", "", "| Provider | Model | Tokens | Known cost |", "| --- | --- | ---: | ---: |"]
+    lines += [f"| {provider} | {model} | {data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,} | {_cost_display(data)} |" for provider, model, data in _provider_model_rows(combined_models)]
     for agent, stats in sorted(report.agent_stats.items()):
-        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Legacy known cost: ${stats.known_cost:.6f}", f"Actual recorded cost: ${stats.actual_cost:.6f}" if stats.cost_status_counts.get("recorded") else "Actual recorded cost: N/A", f"API-equivalent estimate: ${stats.api_equivalent_estimate:.6f}" if stats.estimate_status_counts.get("estimated") else "API-equivalent estimate: N/A", "", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Actual recorded | API-equivalent estimate | Cost status |", "| --- | --- | --- | --- | ---: | ---: | ---: | --- |"]
+        lines += ["", f"## {agent}", "", f"Tokens: {stats.total_tokens:,}", f"Legacy known cost: ${stats.known_cost:.6f}", f"Actual recorded cost: ${stats.actual_cost:.6f}" if stats.cost_status_counts.get("recorded") else "Actual recorded cost: N/A", f"API-equivalent estimate: ${stats.api_equivalent_estimate:.6f}" if stats.estimate_status_counts.get("estimated") else "API-equivalent estimate: N/A", "", "### All models by provider", "", "| Provider | Model | Tokens | Known cost |", "| --- | --- | ---: | ---: |"]
+        lines += [f"| {provider} | {model} | {data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,} | {_cost_display(data)} |" for provider, model, data in _provider_model_rows(stats.provider_model_breakdown)]
+        lines += ["", "| Provider | Observed via | Model | Billing mode | Tokens | Known cost | Actual recorded | API-equivalent estimate | Cost status |", "| --- | --- | --- | --- | ---: | ---: | ---: | --- |"]
         for route, data in sorted(stats.route_breakdown.items()):
             provider_model, mode = route.rsplit(" [", 1)
             provider, model = provider_model.split("/", 1)
@@ -736,14 +771,17 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         return "All displayed costs are known."
 
     agents = sorted(report.agent_stats.items())
+    all_models = _combined_provider_model_breakdown(report)
     nav = [("SUMMARY", "index.html"), *[(AGENT_NAMES.get(agent, agent), f"{agent}.html") for agent, _ in agents]]
+    if all_models:
+        nav.append(("MODELS", "models.html"))
 
     def page(title, active, body) -> str:
         links = "".join(
             f'<a href="{href}"' + (' aria-current="page"' if href == active else '') + f">{text(label)}</a>"
             for label, href in nav
         )
-        return """<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>""" + text(title) + """</title><style>:root{--ink:#0c1520;--panel:#132334;--line:#31465a;--text:#e7eef5;--muted:#9fb0c1;--accent:#69d2e7;--signal:#f2bc5e}body{margin:0;background:var(--ink);color:var(--text);font:15px system-ui,sans-serif}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);max-width:1400px;margin:auto}aside{padding:2rem 1rem;background:var(--panel);min-height:100vh}aside a{display:block;padding:.6rem;color:var(--muted);text-decoration:none;border-left:2px solid transparent}aside a[aria-current=page]{color:var(--accent);border-color:var(--accent)}main{padding:2rem;min-width:0}h1{margin:.15rem 0;color:var(--accent);letter-spacing:-.03em}.eyebrow{margin:0;color:var(--muted);font-size:.75rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;margin:1.5rem 0;background:var(--line);border:1px solid var(--line)}.insight{padding:1rem;background:var(--panel)}.insight strong,.insight span{display:block}.insight strong{margin:.3rem 0;font-size:1.15rem}.insight span{color:var(--muted)}section,details{margin:1rem 0}summary{display:flex;justify-content:space-between;gap:1rem;padding:.75rem 0;color:var(--accent);font-size:1.1rem;font-weight:700;cursor:pointer}.section-meta{color:var(--muted);font-size:.8rem;font-weight:400}table{width:100%;border-collapse:collapse}th,td{padding:.55rem;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.8rem;text-transform:uppercase}table.sortable th{cursor:pointer}.table-scroll{max-width:100%;overflow-x:auto}table.sortable{min-width:650px}th:focus,summary:focus{outline:2px solid var(--signal);outline-offset:2px}td{font-variant-numeric:tabular-nums}@media(max-width:700px){.layout{display:block}aside{min-height:auto}main{padding:1.25rem}.summary-grid{grid-template-columns:1fr}summary{font-size:1rem}}</style></head><body><div class=\"layout\"><aside><strong>Eurysx</strong>""" + links + "</aside><main>" + body + "</main></div><script>document.querySelectorAll('table.sortable').forEach(table=>{const headers=table.querySelectorAll('th');const value=cell=>{const text=cell.textContent.trim();if(!text||text==='N/A')return null;if(/^\\d{4}-\\d{2}-\\d{2}$/.test(text))return text;const number=text.replace(/[$,%]/g,'').match(/^-?[\\d,.]+/);return number?Number(number[0].replace(/,/g,'')):text.toLowerCase()};const sort=index=>{const header=headers[index];const ascending=header.getAttribute('aria-sort')!=='ascending';headers.forEach(item=>item.setAttribute('aria-sort','none'));header.setAttribute('aria-sort',ascending?'ascending':'descending');[...table.tBodies[0].rows].sort((left,right)=>{const a=value(left.cells[index]),b=value(right.cells[index]);if(a===null)return 1;if(b===null)return -1;return(typeof a==='number'&&typeof b==='number'?a-b:String(a).localeCompare(String(b)))*(ascending?1:-1)}).forEach(row=>table.tBodies[0].append(row))};headers.forEach((header,index)=>{header.addEventListener('click',()=>sort(index));header.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();sort(index)}})})});</script></body></html>"
+        return """<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>""" + text(title) + """</title><style>:root{--ink:#0c1520;--panel:#132334;--line:#31465a;--text:#e7eef5;--muted:#9fb0c1;--accent:#69d2e7;--signal:#f2bc5e}body{margin:0;background:var(--ink);color:var(--text);font:15px system-ui,sans-serif}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);max-width:1400px;margin:auto}aside{padding:2rem 1rem;background:var(--panel);min-height:100vh}aside a{display:block;padding:.6rem;color:var(--muted);text-decoration:none;border-left:2px solid transparent}aside a[aria-current=page]{color:var(--accent);border-color:var(--accent)}main{padding:2rem;min-width:0}h1{margin:.15rem 0;color:var(--accent);letter-spacing:-.03em}.eyebrow{margin:0;color:var(--muted);font-size:.75rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;margin:1.5rem 0;background:var(--line);border:1px solid var(--line)}.insight{padding:1rem;background:var(--panel)}.insight strong,.insight span{display:block}.insight strong{margin:.3rem 0;font-size:1.15rem}.insight span{color:var(--muted)}section,details{margin:1rem 0}summary{display:flex;justify-content:space-between;gap:1rem;padding:.75rem 0;color:var(--accent);font-size:1.1rem;font-weight:700;cursor:pointer}.section-meta{color:var(--muted);font-size:.8rem;font-weight:400}table{width:100%;border-collapse:collapse}th,td{padding:.55rem;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.8rem;text-transform:uppercase}table.sortable th{cursor:pointer}.table-scroll{max-width:100%;overflow-x:auto}table.sortable{min-width:650px}th:focus,summary:focus{outline:2px solid var(--signal);outline-offset:2px}td{font-variant-numeric:tabular-nums}@media(max-width:700px){.layout{display:block}aside{min-height:auto}main{padding:1.25rem}.summary-grid{grid-template-columns:1fr}summary{font-size:1rem}}</style></head><body><div class=\"layout\"><aside><strong>Eurysx</strong>""" + links + "</aside><main>" + body + "</main></div><script>document.querySelectorAll('table.sortable').forEach(table=>{const headers=table.querySelectorAll('th');const value=cell=>{const text=cell.textContent.trim();if(!text||text==='N/A')return null;if(/^\\d{4}-\\d{2}-\\d{2}$/.test(text))return text;const number=text.replace(/[$,%]/g,'').match(/^-?[\\d,.]+/);return number?Number(number[0].replace(/,/g,'')):text.toLowerCase()};const sort=index=>{const header=headers[index];const ascending=header.getAttribute('aria-sort')!=='ascending';headers.forEach(item=>item.setAttribute('aria-sort','none'));header.setAttribute('aria-sort',ascending?'ascending':'descending');[...table.tBodies[0].rows].sort((left,right)=>{const a=value(left.cells[index]),b=value(right.cells[index]);if(a===null)return 1;if(b===null)return -1;return(typeof a==='number'&&typeof b==='number'?a-b:String(a).localeCompare(String(b)))*(ascending?1:-1)}).forEach(row=>table.tBodies[0].append(row))};headers.forEach((header,index)=>{header.addEventListener('click',()=>sort(index));header.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();sort(index)}})})});const filterProvider=value=>document.querySelectorAll('table.sortable tbody tr').forEach(row=>row.hidden=!!value&&row.cells[0].textContent!==value);</script></body></html>"
 
     overview_rows = []
     combined = {"tokens": 0, "requests": 0, "turns": 0, "tools": 0, "cost": 0.0, "daily": 0.0, "counts": {}}
@@ -786,6 +824,17 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
         [(index, leader["provider"], leader["model"], f"{leader['tokens']:,}") for index, leader in enumerate(leaders["combined"], 1)],
     ) + "</section>"
     pages = {"index.html": page("Eurysx report", "index.html", insights + leader_tables + "<section><h2>COMPARISON SUMMARY</h2>" + table(("Agent", "Total tokens", "Requests", "Turns", "Tool calls", "Known cost", "Daily known"), overview_rows) + "</section>" + _html_aggregate_imports(report, section, table))}
+    if all_models:
+        providers = sorted(all_models)
+        model_table = table(
+            ("Provider", "Model", "Tokens", "Known cost"),
+            [(provider, model, f"{data['input'] + data['output'] + data['cache_read'] + data['cache_write']:,}", _cost_display(data)) for provider, model, data in _provider_model_rows(all_models)],
+            sortable=True,
+        )
+        provider_options = "".join(f'<option value="{text(provider)}">{text(provider)}</option>' for provider in providers)
+        filter_control = ('<label>Provider <select id="provider-filter" onchange="filterProvider(this.value)">'
+                          '<option value="">All providers</option>' + provider_options + '</select></label>')
+        pages["models.html"] = page("Eurysx: models", "models.html", "<h1>ALL MODELS BY PROVIDER</h1>" + filter_control + model_table)
 
     for agent, stats in agents:
         display = report.agent_displays.get(agent)
@@ -803,7 +852,10 @@ def build_html_reports(report: AnalysisReport) -> Dict[str, str]:
             section("MODEL ACTIVITY VOLUME", table(("Period", "Requests", "Turns", "Tool calls"), [(label, f"{stats.total_model_requests / total_days * multiplier:,.0f}" if total_days else "N/A", f"{stats.total_model_turns / total_days * multiplier:,.0f}" if total_days else "N/A", f"{stats.total_model_tool_calls / total_days * multiplier:,.0f}" if total_days else "N/A") for label, multiplier in (("Daily", 1), ("Weekly", 7), ("Monthly", 30), ("Quarterly", 90), ("Yearly", 365))])),
             section("COST ANALYSIS", table(("Metric", "Value"), (("Known cost", cost(stats, stats.known_cost)), ("Unknown-cost entries", f"{stats.unknown_cost_count:,}"), ("Unknown metered-cost tokens", f"{stats.unknown_cost_tokens:,}"), ("Metered token coverage", f"{stats.priced_token_coverage:.1%}" if stats.priced_token_coverage is not None else "N/A"), *[(f"{mode.title()} tokens", f"{tokens:,}") for mode, tokens in sorted(stats.non_metered_tokens.items())]))),
         ))
-        for title, label, data, noun in (("BREAKDOWN BY MODEL", "Model", stats.model_breakdown, "models"), ("BREAKDOWN BY PROJECT", "Project", stats.project_breakdown, "projects"), ("BREAKDOWN BY SESSION", "Session", stats.session_breakdown, "sessions")):
+        model_rows = _provider_model_rows(stats.provider_model_breakdown)
+        sections.append(section("ALL MODELS BY PROVIDER", table(("Provider", "Model", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(provider, model, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for provider, model, item in model_rows], sortable=True), meta=f"{len(model_rows)} {'model' if len(model_rows) == 1 else 'models'}"))
+        sections.append(section("BREAKDOWN BY MODEL", table(("Provider", "Model", "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(provider, model, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for provider, model, item in model_rows], sortable=True), meta=f"{len(model_rows)} {'model' if len(model_rows) == 1 else 'models'}"))
+        for title, label, data, noun in (("BREAKDOWN BY PROJECT", "Project", stats.project_breakdown, "projects"), ("BREAKDOWN BY SESSION", "Session", stats.session_breakdown, "sessions")):
             count = len(data)
             sections.append(section(title, table((label, "Tokens", "Known cost", "Actual recorded", "API-equivalent estimate", "Cost status"), [(key, f"{item['input'] + item['output'] + item['cache_read'] + item['cache_write']:,}", _cost_display(item), _lane_display(item, "actual_cost"), _lane_display(item, "api_equivalent_estimate"), _cost_status(item)) for key, item in sorted(data.items())], sortable=True), meta=f"{count} {noun[:-1] if count == 1 else noun}"))
         days = len(stats.daily_activity)
@@ -837,7 +889,10 @@ def build_json_report(report: AnalysisReport) -> Dict:
             agent: _agent_stats_dict(stats)
             for agent, stats in report.agent_stats.items()
         },
-        "comparison_summary": {"leaders": _comparison_leaders(report)},
+        "comparison_summary": {
+            "leaders": _comparison_leaders(report),
+            "all_models_by_provider": _combined_provider_model_breakdown(report),
+        },
         "aggregate_imports": _aggregate_import_dict(report.aggregate_imports),
         "period_comparison": {
             agent: {

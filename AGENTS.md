@@ -43,7 +43,7 @@ Parser changes must bump the matching collector version: Claude Code 1, Codex 2,
 
 `billing_mode` is set during pricing and may become `metered` on recorded-cost conflict; apply `--billing-mode` after pricing, not in SQL. Claude Code stats are aggregate-only, excluded from selected ranges, and stamped with date-only `lastComputedDate`. Keep the JSON baseline shape stable, use explicit JSON `null` ratios, and keep `AGENT_STATS_KEYS` sorted. The JSON report is at `schema_version` 2; `aggregate_imports` always renders, with `reported_cost_usd` `null` rather than `0` when a source carries no reported cost. Validation is lazy in `PreferencesResolver`, so anything that reads `aggregate_imports()` must do so before flushing `warnings`, or the diagnostic is lost.
 
-Release state lives in exactly two places and must agree: `src/eurysx/__init__.py` and `pyproject.toml` (currently 0.2.0); a unit test pins the CLI version string and CI compares the tag to the manifest.
+Release state lives in exactly two places and must agree: `src/eurysx/__init__.py` and `pyproject.toml` (currently 0.2.1); a unit test pins the CLI version string and CI compares the tag to the manifest.
 
 ## Live smoke tests
 

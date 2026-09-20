@@ -1765,6 +1765,38 @@ class CostCoverageTests(unittest.TestCase):
             app.build_markdown_report(report),
         )
 
+    def test_presenters_group_all_models_by_provider(self):
+        first = self._usage("recorded", 1.0, 10, model="shared")
+        first.provider = "provider-a"
+        second = self._usage("recorded", 2.0, 20, model="shared")
+        second.provider = "provider-b"
+        stats = app.UsageAnalyzer.analyze_agent(
+            "pi", [first, second], date(2026, 8, 1), date(2026, 8, 1), "1d",
+        )
+        report = self._terminal_report(stats)
+        self.assertEqual(
+            stats.provider_model_breakdown["provider-a"]["shared"]["input"], first.input_tokens,
+        )
+        self.assertEqual(
+            stats.provider_model_breakdown["provider-b"]["shared"]["input"], second.input_tokens,
+        )
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            app.print_single_agent_report(report, "pi")
+        self.assertIn("ALL MODELS BY PROVIDER", terminal.getvalue())
+        self.assertIn("provider-a", terminal.getvalue())
+        self.assertIn("provider-b", terminal.getvalue())
+        self.assertIn("provider_model_breakdown", app.build_json_report(report)["agent_stats"]["pi"])
+        self.assertIn("all,provider-a,,shared,all_models", app.build_csv_report(report))
+        self.assertIn("## All models by provider", app.build_markdown_report(report))
+        pages = app.build_html_reports(report)
+        self.assertIn("ALL MODELS BY PROVIDER", pages["pi.html"])
+        self.assertNotIn("ALL MODELS BY PROVIDER", pages["index.html"])
+        self.assertIn("ALL MODELS BY PROVIDER", pages["models.html"])
+        self.assertIn('href="models.html"', pages["index.html"])
+        self.assertIn('<select id="provider-filter"', pages["models.html"])
+        self.assertIn("filterProvider", pages["models.html"])
+
     def test_all_presenters_label_route_actual_and_estimate_lanes(self):
         usage = self._usage("recorded", 1.0, 10)
         usage.actual_cost = 1.0
@@ -1851,10 +1883,11 @@ class CostCoverageTests(unittest.TestCase):
 
         pages = app.build_html_reports(self._terminal_report(stats))
 
-        self.assertEqual(sorted(pages), ["index.html", "pi.html"])
+        self.assertEqual(sorted(pages), ["index.html", "models.html", "pi.html"])
         self.assertIn("COMBINED TOTAL", pages["index.html"])
         self.assertIn('href="pi.html"', pages["index.html"])
-        self.assertIn('href="index.html"', pages["pi.html"])
+        self.assertIn('href="models.html"', pages["index.html"])
+        self.assertIn('href="index.html"', pages["models.html"])
         for section in (
             "TOTAL USAGE", "COST PROJECTIONS", "TOKEN VOLUME",
             "MODEL ACTIVITY VOLUME", "COST ANALYSIS", "PRICING PROVENANCE",
@@ -3137,7 +3170,7 @@ class Act3Phase1BaselineTests(unittest.TestCase):
     AGENT_STATS_KEYS = sorted([
         "billing_mode_tokens", "cache_efficiency_ratio", "cache_read_ratio",
         "cost_status_counts", "daily_activity", "daily_cost", "known_cost",
-        "metered_tokens", "model_breakdown", "model_requests", "model_tool_calls",
+        "metered_tokens", "model_breakdown", "provider_model_breakdown", "model_requests", "model_tool_calls",
         "model_turns", "monthly_cost", "non_metered_tokens", "priced_token_coverage",
         "pricing_fetched_at", "pricing_source_kinds", "pricing_sources", "project_breakdown",
         "pacing", "quarterly_cost", "requests_per_turn", "route_breakdown", "scope_warnings",
@@ -3467,7 +3500,7 @@ class VersionTests(unittest.TestCase):
                     app.parse_args()
 
             self.assertEqual(exit_code.exception.code, 0)
-            self.assertEqual(output.getvalue().strip(), "eurysx 0.2.0")
+            self.assertEqual(output.getvalue().strip(), "eurysx 0.2.1")
 
     def test_cli_version_matches_package_metadata(self):
         with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as metadata:

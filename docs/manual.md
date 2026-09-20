@@ -55,6 +55,12 @@ eurysx --refresh-pricing
 Terminal reports print one block per agent, then `PROVIDER-REPORTED AGGREGATES` when
 aggregate rows are stored, then `COMPARISON SUMMARY` for multi-agent runs. The aggregate
 block is printed outside every agent block so its figures cannot be read as agent usage.
+Every model table includes a provider column. `ALL MODELS BY PROVIDER` lists each harness's
+models and, for multi-agent runs, the combined local total; unknown providers render as
+`unknown`. HTML shows the per-agent rollups on agent pages and puts the combined, sortable
+rollup on a dedicated `MODELS` page, with a provider dropdown filter. CSV adds per-agent and
+`agent=all` `billing_mode=all_models` rollup rows alongside its route rows, while Markdown
+and JSON include the per-agent and combined provider/model rollups.
 
 JSON schema version 2 is stable. It contains `schema_version`, analysis period, pricing/preferences provenance, agent stats, `unresolved_routes`, `pacing`, period comparison, and the additive `aggregate_imports` lane. Estimate fields are additive: each agent has `actual_cost_usd`, `api_equivalent_estimate_usd`, `estimate_status_counts`, and metadata-only `estimate_entries`. An entry includes its estimate, effective provider/model, source provenance, rates, token dimensions, and calculation timestamp, never prompts, responses, tool data, proxy configuration, YAML text, or paths. Aggregate amounts are `0` when no matching amounts exist; absent per-entry rate dimensions are JSON `null`; unavailable estimates have a status count but no entry.
 
