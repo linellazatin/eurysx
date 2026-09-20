@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1] - Provider-qualified model output
+
+### Changed
+
+- Every local model breakdown now includes its provider. Terminal, JSON, CSV, Markdown, and HTML add provider-categorized `ALL MODELS` rollups for each harness and the combined report.
+
+### Tests
+
+- Added presenter coverage for the same model ID used through two providers.
+
 ## [0.2.0] - Anthropic aggregate-cost imports
 
 ### Added

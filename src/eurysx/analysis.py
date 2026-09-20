@@ -98,6 +98,11 @@ class UsageAnalyzer:
             'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
             'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
         })
+        provider_model_tokens = defaultdict(lambda: defaultdict(lambda: {
+            'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
+            'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
+            'cost_status_counts': {}, 'model_requests': 0, 'model_turns': 0, 'model_tool_calls': 0
+        }))
         project_tokens = defaultdict(lambda: {
             'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0,
             'actual_cost': None, 'api_equivalent_estimate': None, 'estimate_status_counts': {},
@@ -131,6 +136,10 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['model_requests'] += usage.model_requests
             model_tokens[usage.model_id]['model_turns'] += usage.model_turns
             model_tokens[usage.model_id]['model_tool_calls'] += usage.model_tool_calls
+            provider_model = provider_model_tokens[usage.provider or 'unknown'][usage.model_id]
+            provider_model['model_requests'] += usage.model_requests
+            provider_model['model_turns'] += usage.model_turns
+            provider_model['model_tool_calls'] += usage.model_tool_calls
             project_tokens[usage.project_id or 'unknown']['model_requests'] += usage.model_requests
             project_tokens[usage.project_id or 'unknown']['model_turns'] += usage.model_turns
             project_tokens[usage.project_id or 'unknown']['model_tool_calls'] += usage.model_tool_calls
@@ -154,7 +163,7 @@ class UsageAnalyzer:
             if observed and observed not in route_data['observed_providers']:
                 route_data['observed_providers'].append(observed)
             for bucket in (
-                route_data, model_tokens[usage.model_id],
+                route_data, model_tokens[usage.model_id], provider_model,
                 project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'],
             ):
                 bucket['cost_status_counts'][usage.cost_status] = (
@@ -166,7 +175,7 @@ class UsageAnalyzer:
             stats.estimate_status_counts[usage.estimate_status] = (
                 stats.estimate_status_counts.get(usage.estimate_status, 0) + 1
             )
-            lane_buckets = (route_data, model_tokens[usage.model_id], project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'])
+            lane_buckets = (route_data, model_tokens[usage.model_id], provider_model, project_tokens[usage.project_id or 'unknown'], session_tokens[usage.session_id or 'unknown'])
             for bucket in lane_buckets:
                 bucket['estimate_status_counts'][usage.estimate_status] = bucket['estimate_status_counts'].get(usage.estimate_status, 0) + 1
             if usage.actual_cost is not None:
@@ -200,6 +209,10 @@ class UsageAnalyzer:
             model_tokens[usage.model_id]['output'] += usage.output_tokens
             model_tokens[usage.model_id]['cache_read'] += usage.cache_read_tokens
             model_tokens[usage.model_id]['cache_write'] += usage.cache_write_tokens
+            provider_model['input'] += usage.input_tokens
+            provider_model['output'] += usage.output_tokens
+            provider_model['cache_read'] += usage.cache_read_tokens
+            provider_model['cache_write'] += usage.cache_write_tokens
             project_tokens[usage.project_id or 'unknown']['input'] += usage.input_tokens
             project_tokens[usage.project_id or 'unknown']['output'] += usage.output_tokens
             project_tokens[usage.project_id or 'unknown']['cache_read'] += usage.cache_read_tokens
@@ -210,6 +223,7 @@ class UsageAnalyzer:
             session_tokens[usage.session_id or 'unknown']['cache_write'] += usage.cache_write_tokens
             if usage.cost_status not in ("unknown", "not_applicable"):
                 model_tokens[usage.model_id]['cost'] += usage.cost
+                provider_model['cost'] += usage.cost
                 route_data['cost'] += usage.cost
                 project_tokens[usage.project_id or 'unknown']['cost'] += usage.cost
                 session_tokens[usage.session_id or 'unknown']['cost'] += usage.cost
@@ -253,6 +267,9 @@ class UsageAnalyzer:
             item["tokens"] += usage.total_tokens
         stats.unresolved_routes = list(unresolved.values())
         stats.model_breakdown = dict(model_tokens)
+        stats.provider_model_breakdown = {
+            provider: dict(models) for provider, models in provider_model_tokens.items()
+        }
         stats.route_breakdown = dict(route_tokens)
         stats.project_breakdown = dict(project_tokens)
         stats.session_breakdown = dict(session_tokens)

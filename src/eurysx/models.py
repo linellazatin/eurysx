@@ -107,6 +107,7 @@ class AgentStats:
     usage_entries: int = 0
     sessions_count: int = 0
     model_breakdown: Dict[str, Dict] = None  # Per-model token/cost breakdown
+    provider_model_breakdown: Dict[str, Dict[str, Dict]] = None
     daily_activity: Dict[str, Dict] = None  # Per-day token/cost activity
     total_model_requests: int = 0
     total_model_turns: int = 0
@@ -138,6 +139,8 @@ class AgentStats:
             self.unique_models = set()
         if self.model_breakdown is None:
             self.model_breakdown = {}
+        if self.provider_model_breakdown is None:
+            self.provider_model_breakdown = {}
         if self.daily_activity is None:
             self.daily_activity = {}
         if self.cost_status_counts is None:
