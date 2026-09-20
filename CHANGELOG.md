@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Every local model breakdown now includes its provider. Terminal, JSON, CSV, Markdown, and HTML add provider-categorized `ALL MODELS` rollups for each harness and the combined report.
+- Every local model breakdown now includes its provider. Terminal, JSON, CSV, Markdown, and HTML add provider-categorized `ALL MODELS` rollups for each harness and the combined report; HTML gives the combined rollup its own sortable, provider-filterable `MODELS` page.
 
 ### Tests
 

@@ -1791,7 +1791,11 @@ class CostCoverageTests(unittest.TestCase):
         self.assertIn("## All models by provider", app.build_markdown_report(report))
         pages = app.build_html_reports(report)
         self.assertIn("ALL MODELS BY PROVIDER", pages["pi.html"])
-        self.assertIn("ALL MODELS BY PROVIDER", pages["index.html"])
+        self.assertNotIn("ALL MODELS BY PROVIDER", pages["index.html"])
+        self.assertIn("ALL MODELS BY PROVIDER", pages["models.html"])
+        self.assertIn('href="models.html"', pages["index.html"])
+        self.assertIn('<select id="provider-filter"', pages["models.html"])
+        self.assertIn("filterProvider", pages["models.html"])
 
     def test_all_presenters_label_route_actual_and_estimate_lanes(self):
         usage = self._usage("recorded", 1.0, 10)
@@ -1879,10 +1883,11 @@ class CostCoverageTests(unittest.TestCase):
 
         pages = app.build_html_reports(self._terminal_report(stats))
 
-        self.assertEqual(sorted(pages), ["index.html", "pi.html"])
+        self.assertEqual(sorted(pages), ["index.html", "models.html", "pi.html"])
         self.assertIn("COMBINED TOTAL", pages["index.html"])
         self.assertIn('href="pi.html"', pages["index.html"])
-        self.assertIn('href="index.html"', pages["pi.html"])
+        self.assertIn('href="models.html"', pages["index.html"])
+        self.assertIn('href="index.html"', pages["models.html"])
         for section in (
             "TOTAL USAGE", "COST PROJECTIONS", "TOKEN VOLUME",
             "MODEL ACTIVITY VOLUME", "COST ANALYSIS", "PRICING PROVENANCE",
